@@ -1,6 +1,9 @@
 // ignore_for_file: prefer_final_fields, avoid_print
-import 'package:flutter/material.dart';
+import 'package:flutter/material.dart' hide ConnectionState;
+import 'package:flutter/services.dart';
 import 'package:bluetooth_low_energy/bluetooth_low_energy.dart';
+import 'package:audioplayers/audioplayers.dart';
+import 'package:vibration/vibration.dart';
 import 'dart:async';
 import 'dart:typed_data';
 import 'dart:convert';
@@ -10,7 +13,12 @@ final _serviceUUID     = UUID.fromString('0000FFE0-0000-1000-8000-00805F9B34FB')
 final _biteCharUUID    = UUID.fromString('0000FFE1-0000-1000-8000-00805F9B34FB');
 final _commandCharUUID = UUID.fromString('0000FFE2-0000-1000-8000-00805F9B34FB');
 
-void main() {
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await SystemChrome.setPreferredOrientations([
+    DeviceOrientation.landscapeLeft,
+    DeviceOrientation.landscapeRight,
+  ]);
   runApp(const SmartControlApp());
 }
 
@@ -61,6 +69,9 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
   List<bool> _floatPowerStates = List.generate(20, (_) => true);
   List<bool> _floatBiteStates = List.generate(20, (_) => false);
 
+  // 오디오
+  final _audioPlayer = AudioPlayer();
+
   // BLE
   final _central = CentralManager();
   // 슬롯 번호(1~20) → 연결된 찌 디바이스
@@ -86,6 +97,7 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
     _connStateSub?.cancel();
     _notifySub?.cancel();
     _central.stopDiscovery();
+    _audioPlayer.dispose();
     super.dispose();
   }
 
@@ -93,6 +105,8 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
     _bleStateSub = _central.stateChanged.listen((args) {
       if (args.state == BluetoothLowEnergyState.poweredOn) {
         setState(() => _bleStatus = '준비됨 — 페어링에서 전자찌 검색');
+      } else {
+        setState(() => _bleStatus = 'BLE 꺼짐');
       }
     });
 
@@ -114,10 +128,7 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
       }
     });
 
-    final state = await _central.getState();
-    if (state == BluetoothLowEnergyState.poweredOn) {
-      setState(() => _bleStatus = '준비됨 — 페어링에서 전자찌 검색');
-    }
+    setState(() => _bleStatus = '준비됨 — 페어링에서 전자찌 검색');
   }
 
   int? _slotOf(Peripheral p) {
@@ -195,7 +206,7 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
         p,
         chr,
         value: Uint8List.fromList(utf8.encode(cmd)),
-        withoutResponse: true,
+        type: GATTCharacteristicWriteType.withoutResponse,
       );
     }
   }
@@ -208,7 +219,7 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
           device.peripheral,
           device.commandChar!,
           value: Uint8List.fromList(utf8.encode(cmd)),
-          withoutResponse: true,
+          type: GATTCharacteristicWriteType.withoutResponse,
         );
       } catch (e) {
         print('명령 전송 오류: $e');
@@ -224,7 +235,7 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
         device!.peripheral,
         device.commandChar!,
         value: Uint8List.fromList(utf8.encode(cmd)),
-        withoutResponse: true,
+        type: GATTCharacteristicWriteType.withoutResponse,
       );
     } catch (e) {
       print('개별 명령 전송 오류: $e');
@@ -235,9 +246,29 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
     int index = slot - 1;
     if (index < 0 || index >= 20) return;
     setState(() => _floatBiteStates[index] = true);
+    _playBiteAlert();
     Timer(const Duration(seconds: 3), () {
       if (mounted) setState(() => _floatBiteStates[index] = false);
     });
+  }
+
+  Future<void> _playBiteAlert() async {
+    switch (_notifyMode) {
+      case 'sound':
+        try {
+          await _audioPlayer.stop();
+          await _audioPlayer.play(AssetSource('sound/$_selectedSound.mp3'));
+        } catch (_) {}
+        break;
+      case 'vibrate':
+        final hasVibrator = await Vibration.hasVibrator() ?? false;
+        if (hasVibrator) {
+          Vibration.vibrate(pattern: [0, 500, 200, 500, 200, 500]);
+        }
+        break;
+      case 'mute':
+        break;
+    }
   }
 
   void _toggleNotifyMode() {
@@ -491,43 +522,32 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
               children: [
                 // 상단 헤더
                 Padding(
-                  padding: const EdgeInsets.all(20),
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                   child: Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
                       Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          const Text('SMART CONTROL CENTER',
+                          const Text('SMART CONTROL',
                               style: TextStyle(
-                                  fontSize: 24,
+                                  fontSize: 16,
                                   fontWeight: FontWeight.bold,
-                                  letterSpacing: 2,
+                                  letterSpacing: 1.5,
                                   color: Colors.white,
-                                  shadows: [
-                                    Shadow(
-                                        color: Colors.black54,
-                                        offset: Offset(1, 2),
-                                        blurRadius: 4)
-                                  ])),
-                          const SizedBox(height: 5),
+                                  shadows: [Shadow(color: Colors.black54, offset: Offset(1, 1), blurRadius: 3)])),
                           Row(
                             children: [
                               Icon(
-                                _connectedFloats.isEmpty
-                                    ? Icons.bluetooth_disabled
-                                    : Icons.bluetooth_connected,
-                                color: _connectedFloats.isEmpty
-                                    ? Colors.white38
-                                    : Colors.blueAccent,
-                                size: 14,
+                                _connectedFloats.isEmpty ? Icons.bluetooth_disabled : Icons.bluetooth_connected,
+                                color: _connectedFloats.isEmpty ? Colors.white38 : Colors.blueAccent,
+                                size: 11,
                               ),
-                              const SizedBox(width: 4),
+                              const SizedBox(width: 3),
                               Text(_bleStatus,
                                   style: TextStyle(
-                                      fontSize: 12,
-                                      color: Colors.blueAccent
-                                          .withValues(alpha: 0.8),
+                                      fontSize: 10,
+                                      color: Colors.blueAccent.withValues(alpha: 0.8),
                                       fontWeight: FontWeight.bold)),
                             ],
                           ),
@@ -535,46 +555,40 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
                       ),
                       Row(
                         children: [
-                          ElevatedButton(
-                            onPressed: () {
-                              setState(() {
-                                for (int i = 0; i < 20; i++) {
-                                  _floatPowerStates[i] = true;
-                                }
-                                for (final device in _connectedFloats.values) {
-                                  device.isOn = true;
-                                }
-                              });
-                              _sendCommandToAll('ON');
-                            },
-                            style: ElevatedButton.styleFrom(
-                                backgroundColor:
-                                    Colors.blueAccent.withValues(alpha: 0.8),
-                                shape: RoundedRectangleBorder(
-                                    borderRadius: BorderRadius.circular(20))),
-                            child: const Text('ALL ON',
-                                style: TextStyle(color: Colors.white)),
+                          SizedBox(
+                            height: 28,
+                            child: ElevatedButton(
+                              onPressed: () {
+                                setState(() {
+                                  for (int i = 0; i < 20; i++) _floatPowerStates[i] = true;
+                                  for (final d in _connectedFloats.values) d.isOn = true;
+                                });
+                                _sendCommandToAll('ON');
+                              },
+                              style: ElevatedButton.styleFrom(
+                                  backgroundColor: Colors.blueAccent.withValues(alpha: 0.8),
+                                  padding: const EdgeInsets.symmetric(horizontal: 10),
+                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14))),
+                              child: const Text('ALL ON', style: TextStyle(color: Colors.white, fontSize: 11)),
+                            ),
                           ),
-                          const SizedBox(width: 10),
-                          ElevatedButton(
-                            onPressed: () {
-                              setState(() {
-                                for (int i = 0; i < 20; i++) {
-                                  _floatPowerStates[i] = false;
-                                }
-                                for (final device in _connectedFloats.values) {
-                                  device.isOn = false;
-                                }
-                              });
-                              _sendCommandToAll('OFF');
-                            },
-                            style: ElevatedButton.styleFrom(
-                                backgroundColor:
-                                    Colors.redAccent.withValues(alpha: 0.8),
-                                shape: RoundedRectangleBorder(
-                                    borderRadius: BorderRadius.circular(20))),
-                            child: const Text('ALL OFF',
-                                style: TextStyle(color: Colors.white)),
+                          const SizedBox(width: 6),
+                          SizedBox(
+                            height: 28,
+                            child: ElevatedButton(
+                              onPressed: () {
+                                setState(() {
+                                  for (int i = 0; i < 20; i++) _floatPowerStates[i] = false;
+                                  for (final d in _connectedFloats.values) d.isOn = false;
+                                });
+                                _sendCommandToAll('OFF');
+                              },
+                              style: ElevatedButton.styleFrom(
+                                  backgroundColor: Colors.redAccent.withValues(alpha: 0.8),
+                                  padding: const EdgeInsets.symmetric(horizontal: 10),
+                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14))),
+                              child: const Text('ALL OFF', style: TextStyle(color: Colors.white, fontSize: 11)),
+                            ),
                           ),
                         ],
                       ),
@@ -582,25 +596,29 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
                   ),
                 ),
 
-                // 찌 목록
+                // 찌 목록 — 화면 꽉 채우기
                 Expanded(
-                  child: Center(
-                    child: SingleChildScrollView(
-                      scrollDirection: Axis.horizontal,
-                      padding:
-                          const EdgeInsets.symmetric(horizontal: 20),
-                      child: Row(
-                        crossAxisAlignment: CrossAxisAlignment.end,
+                  child: LayoutBuilder(
+                    builder: (context, constraints) {
+                      final slotWidth = constraints.maxWidth / _floatCount;
+                      final imgHeight = (slotWidth * 6.5)
+                          .clamp(40.0, constraints.maxHeight - 52);
+                      return Row(
                         children: List.generate(
-                            _floatCount, (i) => _buildKreftFloat(i + 1)),
-                      ),
-                    ),
+                          _floatCount,
+                          (i) => SizedBox(
+                            width: slotWidth,
+                            child: _buildKreftFloat(i + 1, imgHeight: imgHeight),
+                          ),
+                        ),
+                      );
+                    },
                   ),
                 ),
 
                 // 하단 컨트롤
                 Container(
-                  height: 180,
+                  height: 130,
                   decoration: BoxDecoration(
                     gradient: LinearGradient(
                       begin: Alignment.bottomCenter,
@@ -616,56 +634,36 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
                     children: [
                       // 밝기 & 감도 슬라이더
                       Padding(
-                        padding:
-                            const EdgeInsets.symmetric(horizontal: 40),
+                        padding: const EdgeInsets.symmetric(horizontal: 16),
                         child: Row(
                           children: [
-                            const Icon(Icons.light_mode,
-                                color: Colors.amber, size: 20),
+                            const Text('밝기', style: TextStyle(color: Colors.amber, fontSize: 12, fontWeight: FontWeight.bold)),
                             Expanded(
                               child: Slider(
                                 value: _brightnessValue,
                                 min: 0.1,
                                 max: 1.0,
-                                onChanged: (v) {
-                                  setState(
-                                      () => _brightnessValue = v);
-                                },
-                                onChangeEnd: (v) {
-                                  _sendCommandToAll(
-                                      'BRIGHTNESS:${v.toStringAsFixed(2)}');
-                                },
+                                onChanged: (v) => setState(() => _brightnessValue = v),
+                                onChangeEnd: (v) => _sendCommandToAll('BRIGHTNESS:${v.toStringAsFixed(2)}'),
                                 activeColor: Colors.amber,
-                                inactiveColor:
-                                    Colors.amber.withValues(alpha: 0.3),
+                                inactiveColor: Colors.amber.withValues(alpha: 0.3),
                               ),
                             ),
-                            const Icon(Icons.waves,
-                                color: Colors.cyanAccent, size: 20),
+                            const Text('감도', style: TextStyle(color: Colors.cyanAccent, fontSize: 12, fontWeight: FontWeight.bold)),
                             Expanded(
                               child: Slider(
                                 value: _sensitivityValue,
                                 min: 0.1,
                                 max: 1.0,
-                                onChanged: (v) {
-                                  setState(
-                                      () => _sensitivityValue = v);
-                                },
-                                onChangeEnd: (v) {
-                                  final threshold =
-                                      (v * 5 + 1).toStringAsFixed(1);
-                                  _sendCommandToAll(
-                                      'SENSITIVITY:$threshold');
-                                },
+                                onChanged: (v) => setState(() => _sensitivityValue = v),
+                                onChangeEnd: (v) => _sendCommandToAll('SENSITIVITY:${(v * 5 + 1).toStringAsFixed(1)}'),
                                 activeColor: Colors.cyanAccent,
-                                inactiveColor: Colors.cyanAccent
-                                    .withValues(alpha: 0.3),
+                                inactiveColor: Colors.cyanAccent.withValues(alpha: 0.3),
                               ),
                             ),
                           ],
                         ),
                       ),
-                      const SizedBox(height: 10),
 
                       // 하단 버튼
                       Padding(
@@ -733,134 +731,127 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
     );
   }
 
-  Widget _buildKreftFloat(int number) {
+  Widget _buildKreftFloat(int number, {double imgHeight = 100}) {
     final index = number - 1;
     final connected = _connectedFloats.containsKey(number);
     final isOn = _floatPowerStates[index];
     final isBite = _floatBiteStates[index];
 
-    Color ledColor = isOn
-        ? _currentFloatColor.withValues(alpha: _brightnessValue)
-        : Colors.grey.shade900;
-    List<BoxShadow>? ledGlow = isOn
-        ? [
-            BoxShadow(
-                color: _currentFloatColor
-                    .withValues(alpha: 0.8 * _brightnessValue),
-                blurRadius: 15 * _brightnessValue,
-                spreadRadius: 4 * _brightnessValue)
-          ]
-        : null;
+    final badgeSize = (imgHeight * 0.2).clamp(16.0, 26.0);
+    final fontSize = (badgeSize * 0.45).clamp(8.0, 12.0);
+    final glowSize = (imgHeight * 0.22).clamp(14.0, 36.0);
+
+    Color ledColor = isOn ? _currentFloatColor : Colors.grey.shade800;
+    double ledOpacity = isOn ? _brightnessValue.clamp(0.3, 1.0) : 0.15;
+    double glowRadius = isOn ? 18 * _brightnessValue : 0;
 
     if (isBite && isOn) {
       ledColor = Colors.redAccent;
-      ledGlow = [
-        const BoxShadow(color: Colors.red, blurRadius: 25, spreadRadius: 8),
-        const BoxShadow(color: Colors.white, blurRadius: 10, spreadRadius: 2),
-      ];
+      ledOpacity = 1.0;
+      glowRadius = 30;
     }
 
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 24),
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          // 연결 상태 표시
-          Container(
-            width: 6,
-            height: 6,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              color: connected ? Colors.blueAccent : Colors.transparent,
-            ),
-          ),
-          const SizedBox(height: 4),
-          // 케미
-          Container(
-            width: 4,
-            height: 20,
-            decoration: BoxDecoration(
-                color: ledColor,
-                borderRadius: BorderRadius.circular(2),
-                boxShadow: ledGlow),
-          ),
-          Container(width: 1.5, height: 3, color: Colors.grey[900]),
-          // 찌탑
-          Container(
-            width: 2.5,
-            height: 110,
-            decoration: const BoxDecoration(
-              gradient: LinearGradient(
-                begin: Alignment.topCenter,
-                end: Alignment.bottomCenter,
-                colors: [
-                  Colors.black, Colors.redAccent,
-                  Colors.black, Colors.redAccent,
-                  Colors.black, Colors.redAccent,
-                  Colors.black, Colors.redAccent,
-                ],
+    return GestureDetector(
+      onLongPress: () {
+        final newState = !_floatPowerStates[index];
+        setState(() => _floatPowerStates[index] = newState);
+        if (connected) {
+          _connectedFloats[number]!.isOn = newState;
+          _sendCommandToSlot(number, newState ? 'ON' : 'OFF');
+        }
+      },
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 6),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            // BLE 연결 점
+            Container(
+              width: 5, height: 5,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: connected ? Colors.blueAccent : Colors.transparent,
               ),
             ),
-          ),
-          // 몸통 (롱프레스로 개별 ON/OFF)
-          GestureDetector(
-            behavior: HitTestBehavior.opaque,
-            onLongPress: () {
-              final newState = !_floatPowerStates[index];
-              setState(() => _floatPowerStates[index] = newState);
-              if (connected) {
-                _connectedFloats[number]!.isOn = newState;
-                _sendCommandToSlot(number, newState ? 'ON' : 'OFF');
-              }
-            },
-            child: CustomPaint(
-                size: const Size(22, 100), painter: KreftBodyPainter()),
-          ),
-          Container(width: 1, height: 60, color: Colors.grey[600]),
-          const SizedBox(height: 15),
-          // 번호 뱃지
-          Container(
-            width: 24,
-            height: 24,
-            alignment: Alignment.center,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              color: isBite
-                  ? Colors.redAccent
-                  : Colors.black.withValues(alpha: 0.6),
-              border: Border.all(
-                  color: isBite ? Colors.white : Colors.white30, width: 1),
-            ),
-            child: Text('$number',
-                style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 11,
-                    fontWeight: FontWeight.bold)),
-          ),
-          const SizedBox(height: 8),
-          // 배터리 바 (전원 상태)
-          Container(
-            width: 22,
-            height: 10,
-            padding: const EdgeInsets.all(1.5),
-            decoration: BoxDecoration(
-              border: Border.all(color: Colors.white54, width: 1.5),
-              borderRadius: BorderRadius.circular(3),
-            ),
-            child: Row(
+            const SizedBox(height: 2),
+            // 찌 이미지 + LED 글로우 오버레이
+            Stack(
+              alignment: Alignment.topCenter,
+              clipBehavior: Clip.none,
               children: [
-                Container(
-                  width: 14,
-                  decoration: BoxDecoration(
-                    color: isOn ? Colors.greenAccent : Colors.grey[800],
-                    borderRadius: BorderRadius.circular(1),
+                // 실제 찌 이미지
+                ColorFiltered(
+                  colorFilter: isOn
+                      ? const ColorFilter.mode(Colors.transparent, BlendMode.dst)
+                      : ColorFilter.mode(Colors.grey.shade700.withValues(alpha: 0.6), BlendMode.srcATop),
+                  child: Image.asset(
+                    'assets/images/float_kreft.png',
+                    height: imgHeight,
+                    fit: BoxFit.fitHeight,
+                  ),
+                ),
+                // LED 발광 — 라디알 그라디언트 (가운데 밝고 외곽 흐려짐)
+                Positioned(
+                  top: -10,
+                  child: AnimatedContainer(
+                    duration: const Duration(milliseconds: 400),
+                    width: isBite ? glowSize * 1.5 : glowSize * _brightnessValue.clamp(0.5, 1.0),
+                    height: isBite ? glowSize * 1.5 : glowSize * _brightnessValue.clamp(0.5, 1.0),
+                    decoration: isOn
+                        ? BoxDecoration(
+                            shape: BoxShape.circle,
+                            gradient: RadialGradient(
+                              colors: [
+                                Colors.white.withValues(alpha: isBite ? 0.95 : 0.85 * ledOpacity),
+                                ledColor.withValues(alpha: isBite ? 0.9 : 0.7 * ledOpacity),
+                                ledColor.withValues(alpha: isBite ? 0.4 : 0.2 * ledOpacity),
+                                ledColor.withValues(alpha: 0.0),
+                              ],
+                              stops: const [0.0, 0.25, 0.6, 1.0],
+                            ),
+                          )
+                        : null,
                   ),
                 ),
               ],
             ),
-          ),
-          const SizedBox(height: 10),
-        ],
+            const SizedBox(height: 4),
+            // 번호 뱃지
+            Container(
+              width: badgeSize, height: badgeSize,
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: isBite ? Colors.redAccent : Colors.black.withValues(alpha: 0.6),
+                border: Border.all(color: isBite ? Colors.white : Colors.white30, width: 1),
+              ),
+              child: Text('$number',
+                  style: TextStyle(
+                      color: Colors.white, fontSize: fontSize, fontWeight: FontWeight.bold)),
+            ),
+            const SizedBox(height: 3),
+            // ON/OFF 표시 바
+            Container(
+              width: badgeSize, height: 7,
+              padding: const EdgeInsets.all(1.5),
+              decoration: BoxDecoration(
+                border: Border.all(color: Colors.white54, width: 1.5),
+                borderRadius: BorderRadius.circular(3),
+              ),
+              child: Row(children: [
+                Expanded(
+                  child: Container(
+                    decoration: BoxDecoration(
+                      color: isOn ? Colors.greenAccent : Colors.grey[800],
+                      borderRadius: BorderRadius.circular(1),
+                    ),
+                  ),
+                ),
+              ]),
+            ),
+            const SizedBox(height: 6),
+          ],
+        ),
       ),
     );
   }
@@ -1063,49 +1054,3 @@ class _PairingScannerWidgetState extends State<_PairingScannerWidget>
   }
 }
 
-class KreftBodyPainter extends CustomPainter {
-  @override
-  void paint(Canvas canvas, Size size) {
-    final w = size.width, h = size.height, cx = w / 2;
-    final paint = Paint()
-      ..shader = const RadialGradient(
-        center: Alignment(-0.2, -0.4),
-        radius: 1.2,
-        colors: [Color(0xFF444444), Color(0xFF111111), Color(0xFF000000)],
-        stops: [0.0, 0.5, 1.0],
-      ).createShader(Rect.fromLTWH(0, 0, w, h))
-      ..style = PaintingStyle.fill;
-    final path = Path()
-      ..moveTo(cx, 0)
-      ..cubicTo(0, 0, 0, h * 0.2, 0, h * 0.2)
-      ..quadraticBezierTo(0, h * 0.5, cx - 0.5, h)
-      ..lineTo(cx + 0.5, h)
-      ..quadraticBezierTo(w, h * 0.5, w, h * 0.2)
-      ..cubicTo(w, h * 0.2, w, 0, cx, 0)
-      ..close();
-    canvas.drawPath(path, paint);
-    canvas.drawPath(
-      path,
-      Paint()
-        ..color = Colors.amber.withValues(alpha: 0.2)
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 0.5,
-    );
-    final tp = TextPainter(
-      text: const TextSpan(
-          text: 'K\nR\nE\nF\nT',
-          style: TextStyle(
-              color: Colors.amber,
-              fontSize: 8.5,
-              fontWeight: FontWeight.bold,
-              height: 1.1,
-              letterSpacing: 1.0)),
-      textDirection: TextDirection.ltr,
-      textAlign: TextAlign.center,
-    )..layout();
-    tp.paint(canvas, Offset(cx - tp.width / 2, h * 0.15));
-  }
-
-  @override
-  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
-}
