@@ -2,6 +2,7 @@
 import 'package:flutter/material.dart' hide ConnectionState;
 import 'package:flutter/services.dart';
 import 'package:bluetooth_low_energy/bluetooth_low_energy.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:vibration/vibration.dart';
 import 'dart:async';
@@ -102,6 +103,11 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
   }
 
   Future<void> _initBle() async {
+    await [
+      Permission.bluetoothScan,
+      Permission.bluetoothConnect,
+    ].request();
+
     _bleStateSub = _central.stateChanged.listen((args) {
       if (args.state == BluetoothLowEnergyState.poweredOn) {
         setState(() => _bleStatus = '준비됨 — 페어링에서 전자찌 검색');
@@ -147,6 +153,10 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
 
       final device = _FloatDevice(peripheral);
       _connectedFloats[slot] = device;
+      setState(() => _bleStatus = '${_connectedFloats.length}개 연결됨');
+
+      // Android BLE 안정화 대기
+      await Future.delayed(const Duration(milliseconds: 1000));
 
       // GATT 탐색
       final services = await _central.discoverGATT(peripheral);
@@ -452,9 +462,13 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
                   return Padding(
                     padding: const EdgeInsets.symmetric(vertical: 4),
                     child: ListTile(
-                      onTap: () {
+                      onTap: () async {
                         setState(() => _selectedSound = name);
-                        Navigator.pop(ctx);
+                        try {
+                          await _audioPlayer.stop();
+                          await _audioPlayer.play(AssetSource('sound/$name.mp3'));
+                        } catch (_) {}
+                        if (ctx.mounted) Navigator.pop(ctx);
                       },
                       shape: RoundedRectangleBorder(
                           borderRadius: BorderRadius.circular(10)),
@@ -668,7 +682,7 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
                       // 하단 버튼
                       Padding(
                         padding:
-                            const EdgeInsets.symmetric(horizontal: 10),
+                            const EdgeInsets.symmetric(horizontal: 4),
                         child: Row(
                           mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                           children: [
@@ -923,13 +937,11 @@ class _PairingScannerWidgetState extends State<_PairingScannerWidget>
 
   void _startScan() {
     _scanSub = widget.central.discovered.listen((event) {
-      final name = event.advertisement.name ?? '';
-      if (!name.contains('KREFT')) return;
       if (_foundDevices.any((d) => d.peripheral.uuid == event.peripheral.uuid)) return;
       setState(() => _foundDevices.add(event));
     });
 
-    widget.central.startDiscovery(serviceUUIDs: [widget.serviceUUID]);
+    widget.central.startDiscovery();
   }
 
   @override
@@ -1009,16 +1021,19 @@ class _PairingScannerWidgetState extends State<_PairingScannerWidget>
                     itemCount: _foundDevices.length,
                     itemBuilder: (ctx, i) {
                       final event = _foundDevices[i];
-                      final name =
-                          event.advertisement.name ?? 'KREFT Float';
+                      final name = event.advertisement.name ?? '(이름없음)';
+                      final serviceUUIDs = event.advertisement.serviceUUIDs;
+                      final isKreft = name.contains('KREFT') ||
+                          (serviceUUIDs?.any((u) => u == widget.serviceUUID) ?? false);
                       final alreadyConnected = widget.connectedUUIDs
                           .contains(event.peripheral.uuid);
                       return ListTile(
-                        leading: const Icon(Icons.waves,
-                            color: Colors.blueAccent),
-                        title: Text(name,
-                            style:
-                                const TextStyle(color: Colors.white)),
+                        leading: Icon(Icons.waves,
+                            color: isKreft ? Colors.greenAccent : Colors.white38),
+                        title: Text(
+                            isKreft ? '★ KREFT Float' : name,
+                            style: TextStyle(
+                                color: isKreft ? Colors.greenAccent : Colors.white54)),
                         subtitle: Text(
                             '신호 강도: ${event.rssi} dBm',
                             style: TextStyle(
