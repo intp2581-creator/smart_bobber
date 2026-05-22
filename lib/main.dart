@@ -6,7 +6,6 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:vibration/vibration.dart';
 import 'dart:async';
-import 'dart:typed_data';
 import 'dart:convert';
 import 'dart:io';
 
@@ -79,7 +78,6 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
   // 슬롯 번호(1~20) → 연결된 찌 디바이스
   final Map<int, _FloatDevice> _connectedFloats = {};
   String _bleStatus = 'BLE 초기화 중...';
-  bool _isScanning = false;
 
   StreamSubscription? _bleStateSub;
   StreamSubscription? _discoverySub;
@@ -155,7 +153,7 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
     try {
       // 빈 슬롯 찾기
       int slot = 1;
-      while (_connectedFloats.containsKey(slot) && slot <= 20) slot++;
+      while (_connectedFloats.containsKey(slot) && slot <= 20) { slot++; }
       if (slot > 20) return;
 
       final device = _FloatDevice(peripheral);
@@ -278,7 +276,7 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
         } catch (_) {}
         break;
       case 'vibrate':
-        final hasVibrator = await Vibration.hasVibrator() ?? false;
+        final hasVibrator = await Vibration.hasVibrator() == true;
         if (hasVibrator) {
           Vibration.vibrate(pattern: [0, 500, 200, 500, 200, 500]);
         }
@@ -581,8 +579,8 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
                             child: ElevatedButton(
                               onPressed: () {
                                 setState(() {
-                                  for (int i = 0; i < 20; i++) _floatPowerStates[i] = true;
-                                  for (final d in _connectedFloats.values) d.isOn = true;
+                                  for (int i = 0; i < 20; i++) { _floatPowerStates[i] = true; }
+                                  for (final d in _connectedFloats.values) { d.isOn = true; }
                                 });
                                 _sendCommandToAll('ON');
                               },
@@ -599,8 +597,8 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
                             child: ElevatedButton(
                               onPressed: () {
                                 setState(() {
-                                  for (int i = 0; i < 20; i++) _floatPowerStates[i] = false;
-                                  for (final d in _connectedFloats.values) d.isOn = false;
+                                  for (int i = 0; i < 20; i++) { _floatPowerStates[i] = false; }
+                                  for (final d in _connectedFloats.values) { d.isOn = false; }
                                 });
                                 _sendCommandToAll('OFF');
                               },
@@ -764,12 +762,12 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
 
     Color ledColor = isOn ? _currentFloatColor : Colors.grey.shade800;
     double ledOpacity = isOn ? _brightnessValue.clamp(0.3, 1.0) : 0.15;
-    double glowRadius = isOn ? 18 * _brightnessValue : 0;
+    // 밝기 곡선 보정: 100%→1.0, 50%→0.80, 30%→0.72 (camfishing_float 동일)
+    final glowAlpha = isOn ? (ledOpacity * 0.4 + 0.6) : 0.0;
 
     if (isBite && isOn) {
       ledColor = Colors.redAccent;
       ledOpacity = 1.0;
-      glowRadius = 30;
     }
 
     return GestureDetector(
@@ -827,9 +825,9 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
                             shape: BoxShape.circle,
                             gradient: RadialGradient(
                               colors: [
-                                Colors.white.withValues(alpha: isBite ? 0.95 : 0.85 * ledOpacity),
-                                ledColor.withValues(alpha: isBite ? 0.9 : 0.7 * ledOpacity),
-                                ledColor.withValues(alpha: isBite ? 0.4 : 0.2 * ledOpacity),
+                                Colors.white.withValues(alpha: isBite ? 1.0 : 0.95 * glowAlpha),
+                                ledColor.withValues(alpha: isBite ? 0.95 : 0.85 * glowAlpha),
+                                ledColor.withValues(alpha: isBite ? 0.5 : 0.35 * glowAlpha),
                                 ledColor.withValues(alpha: 0.0),
                               ],
                               stops: const [0.0, 0.25, 0.6, 1.0],
@@ -1035,7 +1033,7 @@ class _PairingScannerWidgetState extends State<_PairingScannerWidget>
                       final name = event.advertisement.name ?? '(이름없음)';
                       final serviceUUIDs = event.advertisement.serviceUUIDs;
                       final isKreft = name.contains('KREFT') ||
-                          (serviceUUIDs?.any((u) => u == widget.serviceUUID) ?? false);
+                          (serviceUUIDs.any((u) => u == widget.serviceUUID));
                       final alreadyConnected = widget.connectedUUIDs
                           .contains(event.peripheral.uuid);
                       return ListTile(
