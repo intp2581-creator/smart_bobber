@@ -804,9 +804,13 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
                     fit: BoxFit.fitHeight,
                   ),
                 ),
-                // LED 발광 — 라디알 그라디언트 (가운데 밝고 외곽 흐려짐)
-                Positioned(
-                  top: -10,
+                // LED 발광 — 찌탑 흰색 케미 위치에 글로우
+                // top = -(실제크기/2) → 밝기·입질 상태와 무관하게 글로우 중심이 찌탑에 고정
+                AnimatedPositioned(
+                  duration: const Duration(milliseconds: 400),
+                  top: isBite
+                      ? -(glowSize * 1.5 / 2)
+                      : -(glowSize * _brightnessValue.clamp(0.5, 1.0) / 2),
                   child: AnimatedContainer(
                     duration: const Duration(milliseconds: 400),
                     width: isBite ? glowSize * 1.5 : glowSize * _brightnessValue.clamp(0.5, 1.0),
