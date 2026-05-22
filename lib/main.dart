@@ -229,7 +229,7 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
           device.peripheral,
           device.commandChar!,
           value: Uint8List.fromList(utf8.encode(cmd)),
-          type: GATTCharacteristicWriteType.withoutResponse,
+          type: GATTCharacteristicWriteType.withResponse,
         );
       } catch (e) {
         print('명령 전송 오류: $e');
