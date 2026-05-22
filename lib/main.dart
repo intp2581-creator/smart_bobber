@@ -8,6 +8,7 @@ import 'package:vibration/vibration.dart';
 import 'dart:async';
 import 'dart:typed_data';
 import 'dart:convert';
+import 'dart:io';
 
 // BLE UUIDs
 final _serviceUUID     = UUID.fromString('0000FFE0-0000-1000-8000-00805F9B34FB');
@@ -103,6 +104,12 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
   }
 
   Future<void> _initBle() async {
+    // Windows는 CentralManager 미지원 — BLE 없이 UI만 표시
+    if (Platform.isWindows) {
+      setState(() => _bleStatus = 'Windows: BLE 스캔 미지원 (Android 앱 사용 필요)');
+      return;
+    }
+
     await [
       Permission.bluetoothScan,
       Permission.bluetoothConnect,
@@ -616,7 +623,7 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
                     builder: (context, constraints) {
                       final slotWidth = constraints.maxWidth / _floatCount;
                       final imgHeight = (slotWidth * 6.5)
-                          .clamp(40.0, constraints.maxHeight - 52);
+                          .clamp(40.0, constraints.maxHeight - 56);
                       return Row(
                         children: List.generate(
                           _floatCount,
