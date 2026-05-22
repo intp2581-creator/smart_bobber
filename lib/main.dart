@@ -257,6 +257,32 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
     }
   }
 
+  // 탭: 해당 찌 LED 깜빡임 → 물 위에서 위치 확인
+  void _blinkFloat(int slot) {
+    _sendCommandToSlot(slot, 'BLINK');
+  }
+
+  // 드래그 완료: 두 슬롯의 찌 교환
+  void _swapSlots(int slot1, int slot2) {
+    if (slot1 == slot2) return;
+    setState(() {
+      final dev1 = _connectedFloats[slot1];
+      final dev2 = _connectedFloats[slot2];
+      _connectedFloats.remove(slot1);
+      _connectedFloats.remove(slot2);
+      if (dev2 != null) { _connectedFloats[slot1] = dev2; }
+      if (dev1 != null) { _connectedFloats[slot2] = dev1; }
+
+      final ps = _floatPowerStates[slot1 - 1];
+      _floatPowerStates[slot1 - 1] = _floatPowerStates[slot2 - 1];
+      _floatPowerStates[slot2 - 1] = ps;
+
+      final bs = _floatBiteStates[slot1 - 1];
+      _floatBiteStates[slot1 - 1] = _floatBiteStates[slot2 - 1];
+      _floatBiteStates[slot2 - 1] = bs;
+    });
+  }
+
   void _triggerBiteAlert(int slot) {
     int index = slot - 1;
     if (index < 0 || index >= 20) return;
@@ -625,10 +651,53 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
                       return Row(
                         children: List.generate(
                           _floatCount,
-                          (i) => SizedBox(
-                            width: slotWidth,
-                            child: _buildKreftFloat(i + 1, imgHeight: imgHeight),
-                          ),
+                          (i) {
+                            final slot = i + 1;
+                            return SizedBox(
+                              width: slotWidth,
+                              child: DragTarget<int>(
+                                onAcceptWithDetails: (details) =>
+                                    _swapSlots(details.data, slot),
+                                builder: (ctx, candidateData, _) {
+                                  final isOver = candidateData.isNotEmpty;
+                                  return Draggable<int>(
+                                    data: slot,
+                                    feedback: Material(
+                                      color: Colors.transparent,
+                                      child: SizedBox(
+                                        width: slotWidth,
+                                        child: Opacity(
+                                          opacity: 0.85,
+                                          child: _buildKreftFloat(slot,
+                                              imgHeight: imgHeight),
+                                        ),
+                                      ),
+                                    ),
+                                    childWhenDragging: Opacity(
+                                      opacity: 0.25,
+                                      child: _buildKreftFloat(slot,
+                                          imgHeight: imgHeight),
+                                    ),
+                                    child: AnimatedContainer(
+                                      duration:
+                                          const Duration(milliseconds: 150),
+                                      decoration: isOver
+                                          ? BoxDecoration(
+                                              border: Border.all(
+                                                  color: Colors.blueAccent,
+                                                  width: 2),
+                                              borderRadius:
+                                                  BorderRadius.circular(8),
+                                            )
+                                          : null,
+                                      child: _buildKreftFloat(slot,
+                                          imgHeight: imgHeight),
+                                    ),
+                                  );
+                                },
+                              ),
+                            );
+                          },
                         ),
                       );
                     },
@@ -771,6 +840,9 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
     }
 
     return GestureDetector(
+      // 짧게 탭: 해당 찌 LED 깜빡임 → 물 위에서 위치 확인
+      onTap: () => _blinkFloat(number),
+      // 길게 누름: ON/OFF 토글 (기존 동작 유지)
       onLongPress: () {
         final newState = !_floatPowerStates[index];
         setState(() => _floatPowerStates[index] = newState);
