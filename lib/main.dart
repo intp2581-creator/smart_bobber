@@ -678,20 +678,28 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
                                       child: _buildKreftFloat(slot,
                                           imgHeight: imgHeight),
                                     ),
-                                    child: AnimatedContainer(
-                                      duration:
-                                          const Duration(milliseconds: 150),
-                                      decoration: isOver
-                                          ? BoxDecoration(
-                                              border: Border.all(
-                                                  color: Colors.blueAccent,
-                                                  width: 2),
-                                              borderRadius:
-                                                  BorderRadius.circular(8),
-                                            )
-                                          : null,
-                                      child: _buildKreftFloat(slot,
-                                          imgHeight: imgHeight),
+                                    child: Stack(
+                                      children: [
+                                        _buildKreftFloat(slot,
+                                            imgHeight: imgHeight),
+                                        // 드래그 대상 표시 — 레이아웃 영향 없는 오버레이
+                                        if (isOver)
+                                          Positioned.fill(
+                                            child: IgnorePointer(
+                                              child: AnimatedContainer(
+                                                duration: const Duration(
+                                                    milliseconds: 150),
+                                                decoration: BoxDecoration(
+                                                  border: Border.all(
+                                                      color: Colors.blueAccent,
+                                                      width: 2),
+                                                  borderRadius:
+                                                      BorderRadius.circular(8),
+                                                ),
+                                              ),
+                                            ),
+                                          ),
+                                      ],
                                     ),
                                   );
                                 },
