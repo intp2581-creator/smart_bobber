@@ -662,6 +662,9 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
                                   final isOver = candidateData.isNotEmpty;
                                   return Draggable<int>(
                                     data: slot,
+                                    // 피드백 중심을 포인터에 맞춤 (수평 중앙, 높이 40% 지점)
+                                    dragAnchorStrategy: (_, __, ___) =>
+                                        Offset(slotWidth / 2, imgHeight * 0.4),
                                     feedback: Material(
                                       color: Colors.transparent,
                                       child: SizedBox(
@@ -669,7 +672,7 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
                                         child: Opacity(
                                           opacity: 0.85,
                                           child: _buildKreftFloat(slot,
-                                              imgHeight: imgHeight),
+                                              imgHeight: imgHeight * 0.75),
                                         ),
                                       ),
                                     ),
