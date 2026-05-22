@@ -662,17 +662,22 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
                                   final isOver = candidateData.isNotEmpty;
                                   return Draggable<int>(
                                     data: slot,
-                                    // 피드백 중심을 포인터에 맞춤 (수평 중앙, 높이 40% 지점)
-                                    dragAnchorStrategy: (_, __, ___) =>
-                                        Offset(slotWidth / 2, imgHeight * 0.4),
+                                    // 포인터가 피드백 찌의 수평 중앙·높이 40% 지점에 위치하도록
+                                    dragAnchorStrategy:
+                                        pointerDragAnchorStrategy,
                                     feedback: Material(
                                       color: Colors.transparent,
-                                      child: SizedBox(
-                                        width: slotWidth,
-                                        child: Opacity(
-                                          opacity: 0.85,
-                                          child: _buildKreftFloat(slot,
-                                              imgHeight: imgHeight * 0.75),
+                                      child: Transform.translate(
+                                        // 피드백 시각 중심을 포인터에 정렬
+                                        offset: Offset(
+                                            -slotWidth / 2, -imgHeight * 0.4),
+                                        child: SizedBox(
+                                          width: slotWidth,
+                                          child: Opacity(
+                                            opacity: 0.85,
+                                            child: _buildKreftFloat(slot,
+                                                imgHeight: imgHeight),
+                                          ),
                                         ),
                                       ),
                                     ),
