@@ -5,6 +5,7 @@ import 'package:bluetooth_low_energy/bluetooth_low_energy.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:vibration/vibration.dart';
+import 'package:speech_to_text/speech_to_text.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -30,7 +31,7 @@ class SmartControlApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
-      title: 'Smart Control Center',
+      title: '크래프트',
       theme: ThemeData(
         brightness: Brightness.dark,
         primaryColor: Colors.blueAccent,
@@ -84,10 +85,30 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
   StreamSubscription? _connStateSub;
   StreamSubscription? _notifySub;
 
+  // 앱 UI 깜빡임 (탭·드래그 중 위치 확인용)
+  final Set<int> _blinkingSlots = {};
+  bool _blinkToggle = false;
+  Timer? _blinkTimer;
+
+  // 음성 제어
+  final _speech = SpeechToText();
+  bool _speechAvailable = false;
+  bool _isListening = false;
+  bool _autoListen = false;   // 자동 연속 음성인식
+  bool _restartScheduled = false; // 재시작 중복 방지
+  String _voiceText = '';
+
   @override
   void initState() {
     super.initState();
-    _initBle();
+    _initAll();
+  }
+
+  // BLE → 음성 순서대로 초기화 (권한 팝업 동시 충돌 방지)
+  Future<void> _initAll() async {
+    await _initBle();
+    await Future.delayed(const Duration(milliseconds: 500));
+    await _initSpeech();
   }
 
   @override
@@ -96,6 +117,8 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
     _discoverySub?.cancel();
     _connStateSub?.cancel();
     _notifySub?.cancel();
+    _blinkTimer?.cancel();
+    _speech.cancel();
     _central.stopDiscovery();
     _audioPlayer.dispose();
     super.dispose();
@@ -124,7 +147,12 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
     // 입질 알림 수신
     _notifySub = _central.characteristicNotified.listen((args) {
       final msg = utf8.decode(args.value);
-      if (msg == 'BITE') {
+      if (msg.startsWith('BITE:')) {
+        // 가상 찌 번호별 입질: BITE:N
+        final n = int.tryParse(msg.substring(5));
+        if (n != null && n >= 1 && n <= 20) _triggerBiteAlert(n);
+      } else if (msg == 'BITE') {
+        // 단일 찌 레거시 신호: 연결된 슬롯으로 처리
         final slot = _slotOf(args.peripheral);
         if (slot != null) _triggerBiteAlert(slot);
       }
@@ -260,6 +288,251 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
   // 탭: 해당 찌 LED 깜빡임 → 물 위에서 위치 확인
   void _blinkFloat(int slot) {
     _sendCommandToSlot(slot, 'BLINK');
+  }
+
+  // 앱 UI 깜빡임 타이머 (300ms 주기, 물리 찌와 동기화)
+  void _startBlinkTimer() {
+    _blinkTimer ??= Timer.periodic(const Duration(milliseconds: 300), (_) {
+      if (mounted) setState(() => _blinkToggle = !_blinkToggle);
+    });
+  }
+
+  void _stopBlinkIfDone() {
+    if (_blinkingSlots.isEmpty) {
+      _blinkTimer?.cancel();
+      _blinkTimer = null;
+      if (mounted) setState(() => _blinkToggle = false);
+    }
+  }
+
+  // 탭 시: autoStop=true → 2400ms 후 자동 종료 (8회 깜빡)
+  // 드래그 시: autoStop=false → 드롭 완료 시 _removeBlink 호출로 종료
+  void _addBlink(int slot, {bool autoStop = true}) {
+    setState(() => _blinkingSlots.add(slot));
+    _startBlinkTimer();
+    if (autoStop) {
+      Future.delayed(const Duration(milliseconds: 2400), () {
+        if (mounted) {
+          setState(() => _blinkingSlots.remove(slot));
+          _stopBlinkIfDone();
+        }
+      });
+    }
+  }
+
+  void _removeBlink(int slot) {
+    setState(() => _blinkingSlots.remove(slot));
+    _stopBlinkIfDone();
+  }
+
+  // ── 음성 제어 ─────────────────────────────────────────────
+  Future<void> _initSpeech() async {
+    if (!Platform.isWindows) {
+      await Permission.microphone.request();
+    }
+    _speechAvailable = await _speech.initialize(
+      onStatus: (status) {
+        if (mounted && (status == 'done' || status == 'notListening')) {
+          setState(() => _isListening = false);
+          _scheduleAutoRestart(); // 타임아웃/무음 종료 시 재시작
+        }
+      },
+      onError: (_) {
+        if (mounted) setState(() { _isListening = false; });
+        _scheduleAutoRestart();
+      },
+    );
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _toggleListening() async {
+    if (_isListening) {
+      await _speech.stop();
+      if (mounted) setState(() { _isListening = false; _voiceText = ''; _autoListen = false; });
+      return;
+    }
+    if (!_speechAvailable) return;
+    await _startListening();
+  }
+
+  // 자동 재시작 — 중복 방지 플래그로 onStatus/onResult 동시 트리거 충돌 해결
+  void _scheduleAutoRestart() {
+    if (!_autoListen || _restartScheduled) return;
+    _restartScheduled = true;
+    Future.delayed(const Duration(milliseconds: 1500), () {
+      _restartScheduled = false;
+      if (mounted && _autoListen && !_isListening) {
+        setState(() => _voiceText = '대기 중...');
+        _startListening();
+      }
+    });
+  }
+
+  Future<void> _startListening() async {
+    if (!_speechAvailable || _isListening) return;
+    setState(() { _isListening = true; _voiceText = '듣는 중...'; });
+    await _speech.listen(
+      localeId: 'ko_KR',
+      onResult: (result) {
+        if (!mounted) return;
+        setState(() => _voiceText = result.recognizedWords);
+        if (result.finalResult) {
+          setState(() => _isListening = false);
+          final words = result.recognizedWords.trim();
+          if (words.isNotEmpty) {
+            _parseVoiceCommand(words);
+            // 인식된 명령어를 1.5초간 표시 후 재시작
+            setState(() => _voiceText = '✓ $words');
+          }
+          _scheduleAutoRestart();
+          // 자동 모드 아닐 때는 2초 후 텍스트 제거
+          if (!_autoListen) {
+            Future.delayed(const Duration(seconds: 2), () {
+              if (mounted) setState(() => _voiceText = '');
+            });
+          }
+        }
+      },
+      listenFor: const Duration(seconds: 15),
+      pauseFor: const Duration(seconds: 3),
+    );
+  }
+
+  void _parseVoiceCommand(String text) {
+    final t = text.toLowerCase();
+
+    // 색상 변경 헬퍼
+    void setColor(Color c, int r, int g, int b) {
+      setState(() => _currentFloatColor = c);
+      _sendCommandToAll('COLOR:$r,$g,$b');
+    }
+
+    // ── 전체 ON / OFF ──────────────────────────
+    if (t.contains('전체') || t.contains('모두') || t.contains('전부')) {
+      if (t.contains('켜') || t.contains('온')) {
+        setState(() {
+          for (int i = 0; i < 20; i++) { _floatPowerStates[i] = true; }
+          for (final d in _connectedFloats.values) { d.isOn = true; }
+        });
+        _sendCommandToAll('ON');
+      } else if (t.contains('꺼') || t.contains('오프')) {
+        setState(() {
+          for (int i = 0; i < 20; i++) { _floatPowerStates[i] = false; }
+          for (final d in _connectedFloats.values) { d.isOn = false; }
+        });
+        _sendCommandToAll('OFF');
+      }
+      return;
+    }
+
+    // ── 슬롯 번호 추출 헬퍼 ────────────────────
+    int? parseSlot(String src) {
+      final m = RegExp(r'(\d+)\s*번').firstMatch(src);
+      if (m != null) return int.tryParse(m.group(1)!);
+      const kor = ['일', '이', '삼', '사', '오', '육', '칠', '팔', '구', '십'];
+      for (int i = 0; i < kor.length; i++) {
+        if (src.contains('${kor[i]}번')) return i + 1;
+      }
+      return null;
+    }
+
+    // ── 이동/스왑 ("3번을 1번으로 이동해줘") ──
+    if (t.contains('이동') || t.contains('옮') || t.contains('바꿔') || t.contains('바꾸')) {
+      final allMatches = RegExp(r'(\d+)\s*번').allMatches(t).toList();
+      if (allMatches.length >= 2) {
+        final s1 = int.tryParse(allMatches[0].group(1)!);
+        final s2 = int.tryParse(allMatches[1].group(1)!);
+        if (s1 != null && s2 != null && s1 >= 1 && s1 <= 20 && s2 >= 1 && s2 <= 20) {
+          _swapSlots(s1, s2);
+          return;
+        }
+      }
+    }
+
+    // ── N번만 켜 ("3번만 켜") ─────────────────
+    if (t.contains('만') && (t.contains('켜') || t.contains('온'))) {
+      final slot = parseSlot(t);
+      if (slot != null && slot >= 1 && slot <= 20) {
+        setState(() {
+          for (int i = 0; i < 20; i++) {
+            _floatPowerStates[i] = (i + 1 == slot);
+          }
+          for (final entry in _connectedFloats.entries) {
+            entry.value.isOn = (entry.key == slot);
+          }
+        });
+        for (final entry in _connectedFloats.entries) {
+          _sendCommandToSlot(entry.key, entry.key == slot ? 'ON' : 'OFF');
+        }
+        return;
+      }
+    }
+
+    // ── 단일 슬롯 명령 ─────────────────────────
+    final slot = parseSlot(t);
+    if (slot != null && slot >= 1 && slot <= 20) {
+      if (t.contains('깜빡') || t.contains('위치') || t.contains('어디')) {
+        _blinkFloat(slot);
+        _addBlink(slot);
+      } else if (t.contains('켜') || t.contains('온')) {
+        setState(() => _floatPowerStates[slot - 1] = true);
+        if (_connectedFloats.containsKey(slot)) {
+          _connectedFloats[slot]!.isOn = true;
+          _sendCommandToSlot(slot, 'ON');
+        }
+      } else if (t.contains('꺼') || t.contains('오프')) {
+        setState(() => _floatPowerStates[slot - 1] = false);
+        if (_connectedFloats.containsKey(slot)) {
+          _connectedFloats[slot]!.isOn = false;
+          _sendCommandToSlot(slot, 'OFF');
+        }
+      }
+      return;
+    }
+
+    // ── 색상 ───────────────────────────────────
+    if (t.contains('빨')) { setColor(Colors.redAccent, 255, 0, 0); return; }
+    if (t.contains('파') || t.contains('블루')) { setColor(Colors.lightBlueAccent, 0, 200, 255); return; }
+    if (t.contains('초록') || t.contains('그린')) { setColor(Colors.greenAccent, 0, 255, 100); return; }
+    if (t.contains('노랑') || t.contains('노란') || t.contains('옐로')) { setColor(Colors.amberAccent, 255, 200, 0); return; }
+    if (t.contains('핑크') || t.contains('분홍')) { setColor(Colors.pinkAccent, 255, 0, 150); return; }
+
+    // ── 밝기 ───────────────────────────────────
+    if (t.contains('밝기') || t.contains('밝게') || t.contains('어둡')) {
+      double v;
+      if (t.contains('최대') || t.contains('100')) {
+        v = 1.0;
+      } else if (t.contains('최소')) {
+        v = 0.1;
+      } else if (t.contains('올') || t.contains('높') || t.contains('업') || t.contains('밝게')) {
+        v = (_brightnessValue + 0.2).clamp(0.1, 1.0);
+      } else if (t.contains('내') || t.contains('낮') || t.contains('다운') || t.contains('줄') || t.contains('어둡')) {
+        v = (_brightnessValue - 0.2).clamp(0.1, 1.0);
+      } else {
+        return;
+      }
+      setState(() => _brightnessValue = v);
+      _sendCommandToAll('BRIGHTNESS:${v.toStringAsFixed(2)}');
+      return;
+    }
+
+    // ── 감도 ───────────────────────────────────
+    if (t.contains('감도')) {
+      double v;
+      if (t.contains('최대')) {
+        v = 1.0;
+      } else if (t.contains('최소')) {
+        v = 0.1;
+      } else if (t.contains('올') || t.contains('높') || t.contains('업') || t.contains('세게') || t.contains('강')) {
+        v = (_sensitivityValue + 0.2).clamp(0.1, 1.0);
+      } else if (t.contains('내') || t.contains('낮') || t.contains('다운') || t.contains('줄') || t.contains('약')) {
+        v = (_sensitivityValue - 0.2).clamp(0.1, 1.0);
+      } else {
+        return;
+      }
+      setState(() => _sensitivityValue = v);
+      _sendCommandToAll('SENSITIVITY:${(v * 5 + 1).toStringAsFixed(1)}');
+    }
   }
 
   // 드래그 완료: 두 슬롯의 찌 교환
@@ -662,6 +935,10 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
                                   final isOver = candidateData.isNotEmpty;
                                   return Draggable<int>(
                                     data: slot,
+                                    // 드래그 시작: 앱 UI 깜빡임 시작 (드롭 완료까지 유지)
+                                    onDragStarted: () => _addBlink(slot, autoStop: false),
+                                    // 드래그 종료(성공·취소 모두): 깜빡임 중단
+                                    onDragEnd: (_) => _removeBlink(slot),
                                     // 포인터가 피드백 찌의 수평 중앙·높이 40% 지점에 위치하도록
                                     dragAnchorStrategy:
                                         pointerDragAnchorStrategy,
@@ -820,6 +1097,66 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
                                 icon: Icons.bluetooth,
                                 label: '페어링',
                                 onTap: _showPairingScanner),
+                            // 음성 제어 마이크 버튼
+                            // 탭: 한 번만 듣기 / 길게 누름: 자동 연속 모드 토글
+                            InkWell(
+                              onTap: _speechAvailable ? _toggleListening : null,
+                              onLongPress: _speechAvailable ? () {
+                                setState(() => _autoListen = !_autoListen);
+                                if (_autoListen) {
+                                  _startListening();
+                                } else {
+                                  _speech.stop();
+                                  setState(() { _isListening = false; _voiceText = ''; });
+                                }
+                              } : null,
+                              borderRadius: BorderRadius.circular(10),
+                              child: Container(
+                                width: 70,
+                                padding: const EdgeInsets.symmetric(vertical: 5),
+                                child: Column(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Stack(
+                                      alignment: Alignment.topRight,
+                                      children: [
+                                        Icon(
+                                          _isListening ? Icons.mic : Icons.mic_none,
+                                          color: _autoListen
+                                              ? Colors.amberAccent
+                                              : (_isListening
+                                                  ? Colors.redAccent
+                                                  : (_speechAvailable ? Colors.greenAccent : Colors.white24)),
+                                          size: 30,
+                                        ),
+                                        // 자동 모드 표시 점
+                                        if (_autoListen)
+                                          Container(
+                                            width: 8, height: 8,
+                                            decoration: const BoxDecoration(
+                                              color: Colors.amberAccent,
+                                              shape: BoxShape.circle,
+                                            ),
+                                          ),
+                                      ],
+                                    ),
+                                    const SizedBox(height: 4),
+                                    Text(
+                                      _autoListen ? '자동' : (_isListening ? '듣는 중' : '음성'),
+                                      style: TextStyle(
+                                        color: _autoListen
+                                            ? Colors.amberAccent
+                                            : (_isListening
+                                                ? Colors.redAccent
+                                                : (_speechAvailable ? Colors.greenAccent : Colors.white24)),
+                                        fontSize: 12,
+                                        fontWeight: FontWeight.bold,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
                           ],
                         ),
                       ),
@@ -829,6 +1166,48 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
                 ),
               ],
             ),
+
+            // 음성 인식 결과 오버레이 (화면 중앙 상단)
+            if (_voiceText.isNotEmpty)
+              Positioned(
+                top: 44,
+                left: 0,
+                right: 0,
+                child: Center(
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 9),
+                    decoration: BoxDecoration(
+                      color: Colors.black.withValues(alpha: 0.82),
+                      borderRadius: BorderRadius.circular(24),
+                      border: Border.all(
+                        color: _isListening
+                            ? Colors.redAccent.withValues(alpha: 0.8)
+                            : Colors.greenAccent.withValues(alpha: 0.7),
+                        width: 1.5,
+                      ),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(
+                          _isListening ? Icons.mic : Icons.check_circle_outline,
+                          color: _isListening ? Colors.redAccent : Colors.greenAccent,
+                          size: 18,
+                        ),
+                        const SizedBox(width: 8),
+                        Text(
+                          _voiceText,
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 14,
+                            letterSpacing: 0.5,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
           ],
         ),
       ),
@@ -845,6 +1224,8 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
     final fontSize = (badgeSize * 0.45).clamp(8.0, 12.0);
     final glowSize = (imgHeight * 0.22).clamp(14.0, 36.0);
 
+    final isBlinking = _blinkingSlots.contains(number);
+
     Color ledColor = isOn ? _currentFloatColor : Colors.grey.shade800;
     double ledOpacity = isOn ? _brightnessValue.clamp(0.3, 1.0) : 0.15;
     // 밝기 곡선 보정: 100%→1.0, 50%→0.80, 30%→0.72 (camfishing_float 동일)
@@ -854,10 +1235,17 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
       ledColor = Colors.redAccent;
       ledOpacity = 1.0;
     }
+    // 깜빡임 중: 물리 찌와 동기화하여 흰색 ↔ 원색 교대
+    if (isBlinking && _blinkToggle && isOn) {
+      ledColor = Colors.white;
+    }
 
     return GestureDetector(
-      // 짧게 탭: 해당 찌 LED 깜빡임 → 물 위에서 위치 확인
-      onTap: () => _blinkFloat(number),
+      // 짧게 탭: 해당 찌 LED 깜빡임 + 앱 UI도 동시에 깜빡임 → 물 위에서 위치 확인
+      onTap: () {
+        _blinkFloat(number);
+        _addBlink(number);
+      },
       // 길게 누름: ON/OFF 토글 (기존 동작 유지)
       onLongPress: () {
         final newState = !_floatPowerStates[index];
@@ -1034,6 +1422,12 @@ class _PairingScannerWidgetState extends State<_PairingScannerWidget>
 
   void _startScan() {
     _scanSub = widget.central.discovered.listen((event) {
+      final name = event.advertisement.name ?? '';
+      final serviceUUIDs = event.advertisement.serviceUUIDs;
+      // KREFT 기기만 표시 (이름 또는 서비스 UUID로 필터)
+      final isKreft = name.contains('KREFT') ||
+          serviceUUIDs.any((u) => u == widget.serviceUUID);
+      if (!isKreft) return;
       if (_foundDevices.any((d) => d.peripheral.uuid == event.peripheral.uuid)) return;
       setState(() => _foundDevices.add(event));
     });
@@ -1111,31 +1505,26 @@ class _PairingScannerWidgetState extends State<_PairingScannerWidget>
           Expanded(
             child: _foundDevices.isEmpty
                 ? Center(
-                    child: Text('검색 대기 중...',
+                    child: Text('KREFT 전자찌 검색 중...',
                         style: TextStyle(
                             color: Colors.white.withValues(alpha: 0.3))))
                 : ListView.builder(
                     itemCount: _foundDevices.length,
                     itemBuilder: (ctx, i) {
                       final event = _foundDevices[i];
-                      final name = event.advertisement.name ?? '(이름없음)';
-                      final serviceUUIDs = event.advertisement.serviceUUIDs;
-                      final isKreft = name.contains('KREFT') ||
-                          (serviceUUIDs.any((u) => u == widget.serviceUUID));
+                      final name = event.advertisement.name ?? 'KREFT Float';
                       final alreadyConnected = widget.connectedUUIDs
                           .contains(event.peripheral.uuid);
                       return ListTile(
-                        leading: Icon(Icons.waves,
-                            color: isKreft ? Colors.greenAccent : Colors.white38),
+                        leading: const Icon(Icons.waves,
+                            color: Colors.greenAccent),
                         title: Text(
-                            isKreft ? '★ KREFT Float' : name,
-                            style: TextStyle(
-                                color: isKreft ? Colors.greenAccent : Colors.white54)),
+                            '★ $name',
+                            style: const TextStyle(color: Colors.greenAccent)),
                         subtitle: Text(
                             '신호 강도: ${event.rssi} dBm',
                             style: TextStyle(
-                                color:
-                                    Colors.white.withValues(alpha: 0.4),
+                                color: Colors.white.withValues(alpha: 0.4),
                                 fontSize: 11)),
                         trailing: alreadyConnected
                             ? const Text('연결됨',
@@ -1147,14 +1536,12 @@ class _PairingScannerWidgetState extends State<_PairingScannerWidget>
                                     widget.onConnect(event.peripheral),
                                 style: ElevatedButton.styleFrom(
                                     backgroundColor:
-                                        Colors.blueAccent.withValues(
-                                            alpha: 0.2),
+                                        Colors.blueAccent.withValues(alpha: 0.2),
                                     shape: RoundedRectangleBorder(
                                         borderRadius:
                                             BorderRadius.circular(20))),
                                 child: const Text('연결',
-                                    style: TextStyle(
-                                        color: Colors.blueAccent)),
+                                    style: TextStyle(color: Colors.blueAccent)),
                               ),
                       );
                     },
