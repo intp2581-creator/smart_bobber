@@ -6,6 +6,7 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:vibration/vibration.dart';
 import 'package:speech_to_text/speech_to_text.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -78,6 +79,8 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
   final _central = CentralManager();
   // 슬롯 번호(1~20) → 연결된 찌 디바이스
   final Map<int, _FloatDevice> _connectedFloats = {};
+  // UUID 문자열 → 고정 슬롯 번호 (재연결 시 같은 슬롯 유지)
+  final Map<String, int> _slotAssignments = {};
   String _bleStatus = 'BLE 초기화 중...';
 
   StreamSubscription? _bleStateSub;
@@ -106,9 +109,50 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
 
   // BLE → 음성 순서대로 초기화 (권한 팝업 동시 충돌 방지)
   Future<void> _initAll() async {
+    await _loadSettings();
     await _initBle();
     await Future.delayed(const Duration(milliseconds: 500));
     await _initSpeech();
+  }
+
+  // ── 설정 저장 / 불러오기 ──────────────────────────────────────────
+
+  Future<void> _loadSettings() async {
+    final prefs = await SharedPreferences.getInstance();
+    setState(() {
+      _notifyMode    = prefs.getString('notifyMode')   ?? 'sound';
+      _floatCount    = prefs.getInt('floatCount')      ?? 10;
+      _selectedSound = prefs.getString('selectedSound') ?? 'sound_1';
+      _brightnessValue  = prefs.getDouble('brightness')  ?? 1.0;
+      _sensitivityValue = prefs.getDouble('sensitivity') ?? 0.5;
+      final colorValue = prefs.getInt('floatColor');
+      if (colorValue != null) _currentFloatColor = Color(colorValue);
+
+      // 저장된 슬롯 매핑 복원
+      final slotJson = prefs.getString('slotAssignments');
+      if (slotJson != null) {
+        try {
+          final map = jsonDecode(slotJson) as Map<String, dynamic>;
+          _slotAssignments.clear();
+          map.forEach((k, v) => _slotAssignments[k] = v as int);
+        } catch (_) {}
+      }
+    });
+  }
+
+  Future<void> _saveSettings() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('notifyMode',    _notifyMode);
+    await prefs.setInt('floatCount',       _floatCount);
+    await prefs.setString('selectedSound', _selectedSound);
+    await prefs.setDouble('brightness',    _brightnessValue);
+    await prefs.setDouble('sensitivity',   _sensitivityValue);
+    await prefs.setInt('floatColor',       _currentFloatColor.toARGB32());
+  }
+
+  Future<void> _saveSlotAssignments() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('slotAssignments', jsonEncode(_slotAssignments));
   }
 
   @override
@@ -179,10 +223,20 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
 
   Future<void> _onFloatConnected(Peripheral peripheral) async {
     try {
-      // 빈 슬롯 찾기
-      int slot = 1;
-      while (_connectedFloats.containsKey(slot) && slot <= 20) { slot++; }
-      if (slot > 20) return;
+      final uuidStr = peripheral.uuid.toString();
+
+      // 기존에 배정된 슬롯이 있으면 재사용, 없으면 빈 슬롯 찾기
+      int? slot = _slotAssignments[uuidStr];
+      if (slot == null || _connectedFloats.containsKey(slot)) {
+        slot = 1;
+        while (_connectedFloats.containsKey(slot!) ||
+            _slotAssignments.values.contains(slot)) {
+          slot++;
+          if (slot > 20) return;
+        }
+        _slotAssignments[uuidStr] = slot;
+        _saveSlotAssignments();
+      }
 
       final device = _FloatDevice(peripheral);
       _connectedFloats[slot] = device;
@@ -226,8 +280,10 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
             ? '준비됨 — 페어링에서 전자찌 검색'
             : '${_connectedFloats.length}개 연결됨';
       });
+      // _slotAssignments 는 유지 (재연결 시 같은 슬롯 복원)
     }
   }
+
 
   Future<void> _sendSettings(_FloatDevice device) async {
     if (device.commandChar == null) return;
@@ -513,6 +569,7 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
       }
       setState(() => _brightnessValue = v);
       _sendCommandToAll('BRIGHTNESS:${v.toStringAsFixed(2)}');
+      _saveSettings();
       return;
     }
 
@@ -532,6 +589,7 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
       }
       setState(() => _sensitivityValue = v);
       _sendCommandToAll('SENSITIVITY:${(v * 5 + 1).toStringAsFixed(1)}');
+      _saveSettings();
     }
   }
 
@@ -553,7 +611,16 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
       final bs = _floatBiteStates[slot1 - 1];
       _floatBiteStates[slot1 - 1] = _floatBiteStates[slot2 - 1];
       _floatBiteStates[slot2 - 1] = bs;
+
+      // UUID → 슬롯 매핑도 함께 업데이트 (재연결 시 같은 슬롯 복원)
+      if (dev1 != null) {
+        _slotAssignments[dev1.peripheral.uuid.toString()] = slot2;
+      }
+      if (dev2 != null) {
+        _slotAssignments[dev2.peripheral.uuid.toString()] = slot1;
+      }
     });
+    _saveSlotAssignments();
   }
 
   void _triggerBiteAlert(int slot) {
@@ -593,6 +660,7 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
         case 'mute':    _notifyMode = 'sound';   break;
       }
     });
+    _saveSettings();
   }
 
   IconData _getNotifyIcon() {
@@ -642,6 +710,7 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
                       onTap: () {
                         setModal(() => _floatCount = n);
                         setState(() => _floatCount = n);
+                        _saveSettings();
                         Navigator.pop(ctx);
                       },
                       child: Container(
@@ -706,6 +775,7 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
                     final cmd =
                         'COLOR:${c['r']},${c['g']},${c['b']}';
                     _sendCommandToAll(cmd);
+                    _saveSettings();
                     Navigator.pop(ctx);
                   },
                   borderRadius: BorderRadius.circular(30),
@@ -772,6 +842,7 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
                           await _audioPlayer.stop();
                           await _audioPlayer.play(AssetSource('sound/$name.mp3'));
                         } catch (_) {}
+                        _saveSettings();
                         if (ctx.mounted) Navigator.pop(ctx);
                       },
                       shape: RoundedRectangleBorder(
@@ -1025,7 +1096,10 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
                                 min: 0.1,
                                 max: 1.0,
                                 onChanged: (v) => setState(() => _brightnessValue = v),
-                                onChangeEnd: (v) => _sendCommandToAll('BRIGHTNESS:${v.toStringAsFixed(2)}'),
+                                onChangeEnd: (v) {
+                                  _sendCommandToAll('BRIGHTNESS:${v.toStringAsFixed(2)}');
+                                  _saveSettings();
+                                },
                                 activeColor: Colors.amber,
                                 inactiveColor: Colors.amber.withValues(alpha: 0.3),
                               ),
@@ -1037,7 +1111,10 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
                                 min: 0.1,
                                 max: 1.0,
                                 onChanged: (v) => setState(() => _sensitivityValue = v),
-                                onChangeEnd: (v) => _sendCommandToAll('SENSITIVITY:${(v * 5 + 1).toStringAsFixed(1)}'),
+                                onChangeEnd: (v) {
+                                  _sendCommandToAll('SENSITIVITY:${(v * 5 + 1).toStringAsFixed(1)}');
+                                  _saveSettings();
+                                },
                                 activeColor: Colors.cyanAccent,
                                 inactiveColor: Colors.cyanAccent.withValues(alpha: 0.3),
                               ),
