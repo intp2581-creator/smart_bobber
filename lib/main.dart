@@ -245,28 +245,45 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
       // Android BLE 안정화 대기
       await Future.delayed(const Duration(milliseconds: 1000));
 
-      // GATT 탐색
+      // GATT 탐색 (진단용 플래그 수집)
+      bool svcFound = false;
+      bool notifyOk = false;
+      bool cmdBound = false;
       final services = await _central.discoverGATT(peripheral);
       for (final svc in services) {
         if (svc.uuid == _serviceUUID) {
+          svcFound = true;
           for (final chr in svc.characteristics) {
             if (chr.uuid == _biteCharUUID) {
               await _central.setCharacteristicNotifyState(
                   peripheral, chr, state: true);
+              notifyOk = true;
             }
             if (chr.uuid == _commandCharUUID) {
               device.commandChar = chr;
+              cmdBound = true;
             }
           }
         }
       }
 
+      // 진단: 어디서 끊겼는지 화면에 표시
+      if (!svcFound) {
+        setState(() => _bleStatus =
+            '⚠ GATT 서비스 미발견 (특성 ${services.length}개 svc) — 찌 재광고 필요');
+      } else if (!notifyOk || !cmdBound) {
+        setState(() => _bleStatus =
+            '⚠ 특성 누락 notify=$notifyOk cmd=$cmdBound');
+      }
+
       // 현재 설정값 전송
       await _sendSettings(device);
 
-      setState(() => _bleStatus = '${_connectedFloats.length}개 연결됨');
+      if (svcFound && notifyOk && cmdBound) {
+        setState(() => _bleStatus = '${_connectedFloats.length}개 연결됨 ✓GATT');
+      }
     } catch (e) {
-      print('연결 처리 오류: $e');
+      setState(() => _bleStatus = '연결 처리 오류: $e');
     }
   }
 
@@ -289,9 +306,9 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
     if (device.commandChar == null) return;
     final chr = device.commandChar!;
     final p = device.peripheral;
-    final r = _currentFloatColor.r.round();
-    final g = _currentFloatColor.g.round();
-    final b = _currentFloatColor.b.round();
+    final r = (_currentFloatColor.r * 255).round();
+    final g = (_currentFloatColor.g * 255).round();
+    final b = (_currentFloatColor.b * 255).round();
 
     final cmds = [
       device.isOn ? 'ON' : 'OFF',
