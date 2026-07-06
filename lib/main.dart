@@ -15,6 +15,25 @@ final _serviceUUID     = UUID.fromString('0000FFE0-0000-1000-8000-00805F9B34FB')
 final _biteCharUUID    = UUID.fromString('0000FFE1-0000-1000-8000-00805F9B34FB');
 final _commandCharUUID = UUID.fromString('0000FFE2-0000-1000-8000-00805F9B34FB');
 
+// 색상 프리셋 — 기본색 + 입질 시 변색 규칙 (전자찌 앱과 동일하게 유지)
+// 빨강→파랑, 초록→빨강, 파랑→빨강, 노랑→초록, 핑크→파랑
+class ColorPreset {
+  final String name;
+  final int r, g, b;      // 기본색
+  final int br, bg, bb;   // 입질 시 변색
+  const ColorPreset(this.name, this.r, this.g, this.b, this.br, this.bg, this.bb);
+  Color get base => Color.fromARGB(255, r, g, b);
+  Color get bite => Color.fromARGB(255, br, bg, bb);
+}
+
+const List<ColorPreset> kColorPresets = [
+  ColorPreset('레드',   255, 0,   0,     0,   200, 255), // 빨강 → 파랑
+  ColorPreset('그린',   0,   255, 100,   255, 0,   0),   // 초록 → 빨강
+  ColorPreset('블루',   0,   200, 255,   255, 0,   0),   // 파랑 → 빨강
+  ColorPreset('옐로우', 255, 200, 0,     0,   255, 100), // 노랑 → 초록
+  ColorPreset('핑크',   255, 0,   150,   0,   200, 255), // 핑크 → 파랑
+];
+
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await SystemChrome.setPreferredOrientations([
@@ -62,7 +81,9 @@ class _FloatDevice {
 class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
   String _notifyMode = 'sound';
   int _floatCount = 10;
-  Color _currentFloatColor = Colors.amberAccent;
+  int _colorIndex = 0;                                   // 선택된 색상 프리셋
+  ColorPreset get _preset => kColorPresets[_colorIndex];
+  Color get _currentFloatColor => _preset.base;          // 기본 표시색
   String _selectedSound = 'sound_1';
   double _brightnessValue = 1.0;
   double _sensitivityValue = 0.5;
@@ -233,13 +254,10 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
     if (device.commandChar == null) return;
     final chr = device.commandChar!;
     final p = device.peripheral;
-    final r = _currentFloatColor.r.round();
-    final g = _currentFloatColor.g.round();
-    final b = _currentFloatColor.b.round();
 
     final cmds = [
       device.isOn ? 'ON' : 'OFF',
-      'COLOR:$r,$g,$b',
+      'COLOR:${_preset.r},${_preset.g},${_preset.b}',
       'BRIGHTNESS:${_brightnessValue.toStringAsFixed(2)}',
       'SENSITIVITY:${(_sensitivityValue * 5 + 1).toStringAsFixed(1)}',
     ];
@@ -401,10 +419,11 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
   void _parseVoiceCommand(String text) {
     final t = text.toLowerCase();
 
-    // 색상 변경 헬퍼
-    void setColor(Color c, int r, int g, int b) {
-      setState(() => _currentFloatColor = c);
-      _sendCommandToAll('COLOR:$r,$g,$b');
+    // 색상 변경 헬퍼 (프리셋 인덱스 선택)
+    void setColorIndex(int i) {
+      final p = kColorPresets[i];
+      setState(() => _colorIndex = i);
+      _sendCommandToAll('COLOR:${p.r},${p.g},${p.b}');
     }
 
     // ── 전체 ON / OFF ──────────────────────────
@@ -490,12 +509,12 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
       return;
     }
 
-    // ── 색상 ───────────────────────────────────
-    if (t.contains('빨')) { setColor(Colors.redAccent, 255, 0, 0); return; }
-    if (t.contains('파') || t.contains('블루')) { setColor(Colors.lightBlueAccent, 0, 200, 255); return; }
-    if (t.contains('초록') || t.contains('그린')) { setColor(Colors.greenAccent, 0, 255, 100); return; }
-    if (t.contains('노랑') || t.contains('노란') || t.contains('옐로')) { setColor(Colors.amberAccent, 255, 200, 0); return; }
-    if (t.contains('핑크') || t.contains('분홍')) { setColor(Colors.pinkAccent, 255, 0, 150); return; }
+    // ── 색상 ─────────────────────────────────── (프리셋: 0레드 1그린 2블루 3옐로우 4핑크)
+    if (t.contains('빨')) { setColorIndex(0); return; }
+    if (t.contains('파') || t.contains('블루')) { setColorIndex(2); return; }
+    if (t.contains('초록') || t.contains('그린')) { setColorIndex(1); return; }
+    if (t.contains('노랑') || t.contains('노란') || t.contains('옐로')) { setColorIndex(3); return; }
+    if (t.contains('핑크') || t.contains('분홍')) { setColorIndex(4); return; }
 
     // ── 밝기 ───────────────────────────────────
     if (t.contains('밝기') || t.contains('밝게') || t.contains('어둡')) {
@@ -670,14 +689,6 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
   }
 
   void _showColorSelector() {
-    final colors = [
-      {'name': '레드',   'color': Colors.redAccent,       'r': 255, 'g': 0,   'b': 0},
-      {'name': '그린',   'color': Colors.greenAccent,     'r': 0,   'g': 255, 'b': 100},
-      {'name': '블루',   'color': Colors.lightBlueAccent, 'r': 0,   'g': 200, 'b': 255},
-      {'name': '옐로우', 'color': Colors.amberAccent,     'r': 255, 'g': 200, 'b': 0},
-      {'name': '핑크',   'color': Colors.pinkAccent,      'r': 255, 'g': 0,   'b': 150},
-    ];
-
     showModalBottomSheet(
       context: context,
       backgroundColor: Colors.black.withValues(alpha: 0.85),
@@ -685,7 +696,7 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
           borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
       builder: (ctx) => Container(
         padding: const EdgeInsets.all(20),
-        height: 200,
+        height: 220,
         child: Column(
           children: [
             const Text('SELECT COLOR',
@@ -694,40 +705,57 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
                     fontWeight: FontWeight.bold,
                     letterSpacing: 1.5,
                     color: Colors.white)),
-            const SizedBox(height: 30),
+            const SizedBox(height: 6),
+            const Text('입질 시 자동 변색',
+                style: TextStyle(fontSize: 11, color: Colors.white38)),
+            const SizedBox(height: 24),
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-              children: colors.map((c) {
-                final col = c['color'] as Color;
-                final sel = _currentFloatColor == col;
+              children: List.generate(kColorPresets.length, (i) {
+                final p = kColorPresets[i];
+                final col = p.base;
+                final sel = _colorIndex == i;
                 return InkWell(
                   onTap: () {
-                    setState(() => _currentFloatColor = col);
-                    final cmd =
-                        'COLOR:${c['r']},${c['g']},${c['b']}';
-                    _sendCommandToAll(cmd);
+                    setState(() => _colorIndex = i);
+                    _sendCommandToAll('COLOR:${p.r},${p.g},${p.b}');
                     Navigator.pop(ctx);
                   },
                   borderRadius: BorderRadius.circular(30),
-                  child: Container(
-                    width: 50,
-                    height: 50,
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      color: col,
-                      border: Border.all(
-                          color: sel ? Colors.white : Colors.transparent, width: 3),
-                      boxShadow: sel
-                          ? [BoxShadow(
-                              color: col.withValues(alpha: 0.8),
-                              blurRadius: 15,
-                              spreadRadius: 3)]
-                          : [BoxShadow(
-                              color: col.withValues(alpha: 0.3), blurRadius: 5)],
-                    ),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Container(
+                        width: 50,
+                        height: 50,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          color: col,
+                          border: Border.all(
+                              color: sel ? Colors.white : Colors.transparent, width: 3),
+                          boxShadow: sel
+                              ? [BoxShadow(
+                                  color: col.withValues(alpha: 0.8),
+                                  blurRadius: 15,
+                                  spreadRadius: 3)]
+                              : [BoxShadow(
+                                  color: col.withValues(alpha: 0.3), blurRadius: 5)],
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      // 입질 시 변색될 색상 미리보기
+                      Container(
+                        width: 12, height: 12,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          color: p.bite,
+                          border: Border.all(color: Colors.white24, width: 1),
+                        ),
+                      ),
+                    ],
                   ),
                 );
-              }).toList(),
+              }),
             ),
           ],
         ),
@@ -1232,7 +1260,7 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
     final glowAlpha = isOn ? (ledOpacity * 0.4 + 0.6) : 0.0;
 
     if (isBite && isOn) {
-      ledColor = Colors.redAccent;
+      ledColor = _preset.bite;   // 입질 시 프리셋 변색 (전자찌와 동일)
       ledOpacity = 1.0;
     }
     // 깜빡임 중: 물리 찌와 동기화하여 흰색 ↔ 원색 교대
@@ -1321,7 +1349,7 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
               alignment: Alignment.center,
               decoration: BoxDecoration(
                 shape: BoxShape.circle,
-                color: isBite ? Colors.redAccent : Colors.black.withValues(alpha: 0.6),
+                color: isBite ? _preset.bite : Colors.black.withValues(alpha: 0.6),
                 border: Border.all(color: isBite ? Colors.white : Colors.white30, width: 1),
               ),
               child: Text('$number',
