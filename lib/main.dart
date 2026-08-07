@@ -582,7 +582,7 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
         }
       },
       listenFor: const Duration(seconds: 10),
-      pauseFor: const Duration(milliseconds: 1200),  // 말 끝나고 1.2초 후 인식 (기존 3초)
+      pauseFor: const Duration(milliseconds: 2000),  // 말 시작 전 여유 + 끝나고 2초 (너무 짧으면 말하기 전에 끝남)
     );
   }
 
@@ -1635,7 +1635,7 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
                         spacing: 10,
                         runSpacing: 10,
                         alignment: WrapAlignment.center,
-                        children: List.generate(_floatCount, (i) {
+                        children: List.generate(_sortQueue.length, (i) {
                           final pos = i + 1;
                           final taken = _sortTargets.values.contains(pos);
                           return InkWell(
