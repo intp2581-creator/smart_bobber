@@ -88,6 +88,8 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
   String _selectedSound = 'sound_1';
   double _brightnessValue = 1.0;
   double _sensitivityValue = 0.5;
+  bool _variColor = true;    // 입질 시 찌 변색 ON/OFF
+  bool _alertPhone = true;   // 입질 시 폰 알림 ON/OFF
 
   // 슬롯별 전원 상태 (BLE 연결되지 않은 슬롯도 표시용)
   List<bool> _floatPowerStates = List.generate(20, (_) => true);
@@ -146,6 +148,8 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
       _selectedSound = prefs.getString('selectedSound') ?? 'sound_1';
       _brightnessValue  = prefs.getDouble('brightness')  ?? 1.0;
       _sensitivityValue = prefs.getDouble('sensitivity') ?? 0.5;
+      _variColor  = prefs.getBool('variColor')  ?? true;
+      _alertPhone = prefs.getBool('alertPhone') ?? true;
       final savedIndex = prefs.getInt('colorIndex');
       if (savedIndex != null && savedIndex >= 0 && savedIndex < kColorPresets.length) {
         _colorIndex = savedIndex;
@@ -171,6 +175,8 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
     await prefs.setDouble('brightness',    _brightnessValue);
     await prefs.setDouble('sensitivity',   _sensitivityValue);
     await prefs.setInt('colorIndex',       _colorIndex);
+    await prefs.setBool('variColor',       _variColor);
+    await prefs.setBool('alertPhone',      _alertPhone);
   }
 
   Future<void> _saveSlotAssignments() async {
@@ -335,6 +341,8 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
       'COLOR:${_preset.r},${_preset.g},${_preset.b}',
       'BRIGHTNESS:${_brightnessValue.toStringAsFixed(2)}',
       'SENSITIVITY:${(_sensitivityValue * 5 + 1).toStringAsFixed(1)}',
+      'VARI:${_variColor ? 1 : 0}',
+      'ALERT:${_alertPhone ? 1 : 0}',
     ];
 
     for (final cmd in cmds) {
@@ -777,6 +785,70 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
     );
   }
 
+  void _showModeSelector() {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.black.withValues(alpha: 0.9),
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setSheet) => Container(
+          padding: const EdgeInsets.fromLTRB(24, 20, 24, 30),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text('입질 모드',
+                  style: TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.bold,
+                      letterSpacing: 1.5,
+                      color: Colors.white)),
+              const SizedBox(height: 6),
+              const Text('일반찌처럼 쓰려면 끄세요',
+                  style: TextStyle(fontSize: 11, color: Colors.white38)),
+              const SizedBox(height: 16),
+              // 변색 토글
+              SwitchListTile(
+                value: _variColor,
+                activeColor: Colors.blueAccent,
+                contentPadding: EdgeInsets.zero,
+                title: const Text('입질 시 찌 변색',
+                    style: TextStyle(color: Colors.white, fontSize: 15)),
+                subtitle: Text(
+                    _variColor ? '입질 오면 색이 변함' : '색 변화 없음 (일반찌)',
+                    style: const TextStyle(color: Colors.white38, fontSize: 12)),
+                onChanged: (v) {
+                  setSheet(() {});
+                  setState(() => _variColor = v);
+                  _sendCommandToAll('VARI:${v ? 1 : 0}');
+                  _saveSettings();
+                },
+              ),
+              const Divider(color: Colors.white12, height: 1),
+              // 폰 알림 토글
+              SwitchListTile(
+                value: _alertPhone,
+                activeColor: Colors.blueAccent,
+                contentPadding: EdgeInsets.zero,
+                title: const Text('입질 시 폰 알림',
+                    style: TextStyle(color: Colors.white, fontSize: 15)),
+                subtitle: Text(
+                    _alertPhone ? '입질 오면 폰에 알림' : '폰 알림 없음',
+                    style: const TextStyle(color: Colors.white38, fontSize: 12)),
+                onChanged: (v) {
+                  setSheet(() {});
+                  setState(() => _alertPhone = v);
+                  _sendCommandToAll('ALERT:${v ? 1 : 0}');
+                  _saveSettings();
+                },
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   void _showColorSelector() {
     showModalBottomSheet(
       context: context,
@@ -1190,6 +1262,10 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
                                 icon: Icons.music_note,
                                 label: '알림음',
                                 onTap: _showSoundSelector),
+                            _BottomMenu(
+                                icon: Icons.tune,
+                                label: '모드',
+                                onTap: _showModeSelector),
                             InkWell(
                               onTap: _toggleNotifyMode,
                               borderRadius: BorderRadius.circular(10),
