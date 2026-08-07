@@ -111,10 +111,16 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
   StreamSubscription? _connStateSub;
   StreamSubscription? _notifySub;
 
-  // 앱 UI 깜빡임 (탭·드래그 중 위치 확인용)
+  // 앱 UI 깜빡임 (탭·드래그 중 위치 확인용) — 5색 순환(낮에도 잘 보이게)
   final Set<int> _blinkingSlots = {};
-  bool _blinkToggle = false;
+  int _blinkColorIdx = 0;
   Timer? _blinkTimer;
+
+  // 찌 정렬 마법사 (A방식: 찌 깜빡 → 사용자가 실제 자리 번호 지정)
+  bool _sortMode = false;
+  List<_FloatDevice> _sortQueue = [];   // 정렬할 찌 스냅샷(깜빡 순서)
+  int _sortIndex = 0;
+  final Map<String, int> _sortTargets = {};  // uuid → 목표 자리
 
   // 음성 제어
   final _speech = SpeechToText();
@@ -391,10 +397,10 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
     _sendCommandToSlot(slot, 'BLINK');
   }
 
-  // 앱 UI 깜빡임 타이머 (300ms 주기, 물리 찌와 동기화)
+  // 앱 UI 깜빡임 타이머 (150ms 주기, 5색 순환 — 물리 찌와 동기화)
   void _startBlinkTimer() {
-    _blinkTimer ??= Timer.periodic(const Duration(milliseconds: 300), (_) {
-      if (mounted) setState(() => _blinkToggle = !_blinkToggle);
+    _blinkTimer ??= Timer.periodic(const Duration(milliseconds: 150), (_) {
+      if (mounted) setState(() => _blinkColorIdx = (_blinkColorIdx + 1) % 5);
     });
   }
 
@@ -402,8 +408,89 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
     if (_blinkingSlots.isEmpty) {
       _blinkTimer?.cancel();
       _blinkTimer = null;
-      if (mounted) setState(() => _blinkToggle = false);
+      if (mounted) setState(() => _blinkColorIdx = 0);
     }
+  }
+
+  // ── 찌 정렬 마법사 (A방식) ──────────────────────────
+  // 시작: 연결된 찌를 하나씩 깜빡 → 사용자가 실제 물 위 자리 번호를 말/탭 → 그 자리로 이동
+  void _startSortWizard() {
+    if (_connectedFloats.isEmpty) {
+      setState(() => _bleStatus = '⚠ 연결된 찌가 없어요 (먼저 페어링)');
+      return;
+    }
+    final entries = _connectedFloats.entries.toList()
+      ..sort((a, b) => a.key.compareTo(b.key));
+    _sortQueue = entries.map((e) => e.value).toList();
+    _sortTargets.clear();
+    _sortIndex = 0;
+    setState(() => _sortMode = true);
+    _sortBlinkCurrent();
+  }
+
+  // 현재 순서의 찌를 깜빡 (물에서 어느 건지 보여줌)
+  void _sortBlinkCurrent() {
+    if (_sortIndex >= _sortQueue.length) return;
+    final slot = _slotOf(_sortQueue[_sortIndex].peripheral);
+    if (slot != null) {
+      _blinkFloat(slot);
+      setState(() => _blinkingSlots.add(slot));
+      _startBlinkTimer();
+    }
+  }
+
+  // 사용자가 목표 자리 번호 지정 (음성/탭)
+  void _sortAssign(int pos) {
+    if (!_sortMode || _sortIndex >= _sortQueue.length) return;
+    if (pos < 1 || pos > 20) return;
+    _sortTargets[_sortQueue[_sortIndex].peripheral.uuid.toString()] = pos;
+    _blinkingSlots.clear();
+    _stopBlinkIfDone();
+    _sortIndex++;
+    if (_sortIndex >= _sortQueue.length) {
+      _applySortResult();
+    } else {
+      setState(() {});
+      _sortBlinkCurrent();
+    }
+  }
+
+  // 정렬 결과 적용 — 각 찌를 목표 자리로 재배치
+  void _applySortResult() {
+    final newFloats = <int, _FloatDevice>{};
+    final newPower = List<bool>.from(_floatPowerStates);
+    for (final device in _sortQueue) {
+      final uuid = device.peripheral.uuid.toString();
+      final target = _sortTargets[uuid];
+      if (target != null && target >= 1 && target <= 20) {
+        newFloats[target] = device;
+        _slotAssignments[uuid] = target;
+        newPower[target - 1] = device.isOn;
+      }
+    }
+    setState(() {
+      _connectedFloats
+        ..clear()
+        ..addAll(newFloats);
+      _floatPowerStates = newPower;
+      _sortMode = false;
+      _blinkingSlots.clear();
+      _bleStatus = '✓ 정렬 완료 (${newFloats.length}개)';
+    });
+    _blinkTimer?.cancel();
+    _blinkTimer = null;
+    _saveSlotAssignments();
+  }
+
+  void _cancelSort() {
+    _blinkingSlots.clear();
+    _blinkTimer?.cancel();
+    _blinkTimer = null;
+    setState(() {
+      _sortMode = false;
+      _blinkColorIdx = 0;
+      _bleStatus = '정렬 취소됨';
+    });
   }
 
   // 탭 시: autoStop=true → 2400ms 후 자동 종료 (8회 깜빡)
@@ -499,9 +586,41 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
     );
   }
 
+  // 음성에서 숫자 하나 추출 (아라비아 + 한글, 번 없어도) — 정렬 모드용
+  int? _extractNumber(String s) {
+    final m = RegExp(r'(\d+)').firstMatch(s);
+    if (m != null) {
+      final n = int.tryParse(m.group(1)!);
+      if (n != null && n >= 1 && n <= 20) return n;
+    }
+    const sino   = ['일', '이', '삼', '사', '오', '육', '칠', '팔', '구', '십'];
+    const native = ['한', '두', '세', '네', '다섯', '여섯', '일곱', '여덟', '아홉', '열'];
+    for (int i = 0; i < 10; i++) {
+      if (s.contains(sino[i]) || s.contains(native[i])) return i + 1;
+    }
+    return null;
+  }
+
   void _parseVoiceCommand(String text) {
     // 띄어쓰기 제거 + 소문자화 → 매칭 너그럽게 ("삼 번"·"3 번"·"3번" 다 인식)
     final t = text.toLowerCase().replaceAll(' ', '');
+
+    // ── 정렬 마법사 진행 중: 숫자=자리지정, 취소=종료 ──
+    if (_sortMode) {
+      if (t.contains('취소') || t.contains('그만') || t.contains('중지') || t.contains('스톱')) {
+        _cancelSort();
+        return;
+      }
+      final p = _extractNumber(t);
+      if (p != null) _sortAssign(p);
+      return;   // 정렬 중엔 다른 명령 무시
+    }
+
+    // ── 정렬 시작 ("찌 정렬", "순서 맞추자", "정렬하자") ──
+    if (t.contains('정렬') || t.contains('순서맞') || t.contains('순서정') || t.contains('순서바')) {
+      _startSortWizard();
+      return;
+    }
 
     // 색상 변경 헬퍼 (프리셋 인덱스 선택)
     void setColorIndex(int i) {
@@ -1328,6 +1447,10 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
                                 icon: Icons.tune,
                                 label: '모드',
                                 onTap: _showModeSelector),
+                            _BottomMenu(
+                                icon: Icons.sort,
+                                label: '정렬',
+                                onTap: _startSortWizard),
                             InkWell(
                               onTap: _toggleNotifyMode,
                               borderRadius: BorderRadius.circular(10),
@@ -1471,7 +1594,89 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
                   ),
                 ),
               ),
+
+            // 정렬 마법사 오버레이
+            if (_sortMode) _buildSortOverlay(),
           ],
+        ),
+      ),
+    );
+  }
+
+  // 정렬 마법사 오버레이 — 깜빡이는 찌의 실제 자리 번호를 탭/음성으로 지정
+  Widget _buildSortOverlay() {
+    final total = _sortQueue.length;
+    final step = _sortIndex + 1;
+    return Positioned.fill(
+      child: Container(
+        color: Colors.black.withValues(alpha: 0.88),
+        child: SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Text('🎣 찌 정렬  ($step / $total)',
+                    style: const TextStyle(
+                        color: Colors.amberAccent,
+                        fontSize: 20,
+                        fontWeight: FontWeight.bold)),
+                const SizedBox(height: 8),
+                const Text('지금 깜빡이는 찌가 물에서 몇 번째 자리인가요?',
+                    style: TextStyle(color: Colors.white, fontSize: 15)),
+                const Text('숫자를 누르거나 "칠번"이라고 말하세요',
+                    style: TextStyle(color: Colors.white38, fontSize: 12)),
+                const SizedBox(height: 16),
+                // 숫자 버튼 그리드 (1 ~ floatCount)
+                Expanded(
+                  child: Center(
+                    child: SingleChildScrollView(
+                      child: Wrap(
+                        spacing: 10,
+                        runSpacing: 10,
+                        alignment: WrapAlignment.center,
+                        children: List.generate(_floatCount, (i) {
+                          final pos = i + 1;
+                          final taken = _sortTargets.values.contains(pos);
+                          return InkWell(
+                            onTap: taken ? null : () => _sortAssign(pos),
+                            borderRadius: BorderRadius.circular(12),
+                            child: Container(
+                              width: 58,
+                              height: 58,
+                              alignment: Alignment.center,
+                              decoration: BoxDecoration(
+                                color: taken
+                                    ? Colors.white10
+                                    : Colors.blueAccent.withValues(alpha: 0.25),
+                                borderRadius: BorderRadius.circular(12),
+                                border: Border.all(
+                                    color: taken ? Colors.white24 : Colors.blueAccent,
+                                    width: 2),
+                              ),
+                              child: Text('$pos',
+                                  style: TextStyle(
+                                      color: taken ? Colors.white24 : Colors.white,
+                                      fontSize: 22,
+                                      fontWeight: FontWeight.bold)),
+                            ),
+                          );
+                        }),
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                // 취소 버튼
+                TextButton.icon(
+                  onPressed: _cancelSort,
+                  icon: const Icon(Icons.close, color: Colors.redAccent),
+                  label: const Text('정렬 취소',
+                      style: TextStyle(color: Colors.redAccent, fontSize: 15)),
+                ),
+              ],
+            ),
+          ),
         ),
       ),
     );
@@ -1498,9 +1703,10 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
       ledColor = _preset.bite;   // 입질 시 프리셋 변색 (전자찌와 동일)
       ledOpacity = 1.0;
     }
-    // 깜빡임 중: 물리 찌와 동기화하여 흰색 ↔ 원색 교대
-    if (isBlinking && _blinkToggle && isOn) {
-      ledColor = Colors.white;
+    // 깜빡임 중: 물리 찌와 동기화하여 5색 순환 (낮에도 잘 보이게)
+    if (isBlinking && isOn) {
+      ledColor = kColorPresets[_blinkColorIdx].base;
+      ledOpacity = 1.0;
     }
 
     return GestureDetector(
