@@ -546,6 +546,37 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
       return null;
     }
 
+    // ── 여러 슬롯 번호 모두 추출 ("2번 4번 6번") ──
+    List<int> parseAllSlots(String src) {
+      final set = <int>{};
+      for (final mm in RegExp(r'(\d+)번').allMatches(src)) {
+        final n = int.tryParse(mm.group(1)!);
+        if (n != null && n >= 1 && n <= 20) set.add(n);
+      }
+      const sino   = ['일', '이', '삼', '사', '오', '육', '칠', '팔', '구', '십'];
+      const native = ['한', '두', '세', '네', '다섯', '여섯', '일곱', '여덟', '아홉', '열'];
+      for (int i = 0; i < 10; i++) {
+        if (src.contains('${sino[i]}번') || src.contains('${native[i]}번')) set.add(i + 1);
+      }
+      return set.toList()..sort();
+    }
+
+    // ── 여러 슬롯에 ON/OFF 적용 ──
+    void applyPower(List<int> slots, bool on) {
+      setState(() {
+        for (final s in slots) {
+          if (s >= 1 && s <= 20) _floatPowerStates[s - 1] = on;
+          final d = _connectedFloats[s];
+          if (d != null) d.isOn = on;
+        }
+      });
+      for (final s in slots) {
+        if (_connectedFloats.containsKey(s)) {
+          _sendCommandToSlot(s, on ? 'ON' : 'OFF');
+        }
+      }
+    }
+
     // ── 이동/스왑 ("3번을 1번으로 이동해줘") ──
     if (t.contains('이동') || t.contains('옮') || t.contains('바꿔') || t.contains('바꾸')) {
       final allMatches = RegExp(r'(\d+)\s*번').allMatches(t).toList();
@@ -556,6 +587,30 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
           _swapSlots(s1, s2);
           return;
         }
+      }
+    }
+
+    // ── 켜/꺼 의도 판별 (여러 표현 커버) ──
+    final wantsOn  = t.contains('켜') || t.contains('온') || t.contains('점등');
+    final wantsOff = t.contains('꺼') || t.contains('오프') || t.contains('소등');
+
+    // ── 짝수 / 홀수 ("짝수 꺼줘", "홀수 켜") ──
+    if ((t.contains('짝수') || t.contains('홀수')) && (wantsOn || wantsOff)) {
+      final even = t.contains('짝수');
+      final slots = <int>[];
+      for (int i = 1; i <= _floatCount; i++) {
+        if (even ? (i % 2 == 0) : (i % 2 == 1)) slots.add(i);
+      }
+      applyPower(slots, !wantsOff);   // 꺼 우선
+      return;
+    }
+
+    // ── 다중 슬롯 ("2번 4번 6번 8번 꺼줘") ──
+    if (wantsOn || wantsOff) {
+      final slots = parseAllSlots(t);
+      if (slots.length >= 2) {
+        applyPower(slots, !wantsOff);
+        return;
       }
     }
 
