@@ -494,13 +494,14 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
           }
         }
       },
-      listenFor: const Duration(seconds: 15),
-      pauseFor: const Duration(seconds: 3),
+      listenFor: const Duration(seconds: 10),
+      pauseFor: const Duration(milliseconds: 1200),  // 말 끝나고 1.2초 후 인식 (기존 3초)
     );
   }
 
   void _parseVoiceCommand(String text) {
-    final t = text.toLowerCase();
+    // 띄어쓰기 제거 + 소문자화 → 매칭 너그럽게 ("삼 번"·"3 번"·"3번" 다 인식)
+    final t = text.toLowerCase().replaceAll(' ', '');
 
     // 색상 변경 헬퍼 (프리셋 인덱스 선택)
     void setColorIndex(int i) {
@@ -528,13 +529,19 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
       return;
     }
 
-    // ── 슬롯 번호 추출 헬퍼 ────────────────────
+    // ── 슬롯 번호 추출 헬퍼 (아라비아 + 한글 사이노/고유어 다 인식) ──
     int? parseSlot(String src) {
-      final m = RegExp(r'(\d+)\s*번').firstMatch(src);
-      if (m != null) return int.tryParse(m.group(1)!);
-      const kor = ['일', '이', '삼', '사', '오', '육', '칠', '팔', '구', '십'];
-      for (int i = 0; i < kor.length; i++) {
-        if (src.contains('${kor[i]}번')) return i + 1;
+      // 1) 아라비아 숫자 + 번
+      final m = RegExp(r'(\d+)번').firstMatch(src);
+      if (m != null) {
+        final n = int.tryParse(m.group(1)!);
+        if (n != null && n >= 1 && n <= 20) return n;
+      }
+      // 2) 한글 숫자 — 사이노(일이삼) + 고유어(한두세네)
+      const sino   = ['일', '이', '삼', '사', '오', '육', '칠', '팔', '구', '십'];
+      const native = ['한', '두', '세', '네', '다섯', '여섯', '일곱', '여덟', '아홉', '열'];
+      for (int i = 0; i < 10; i++) {
+        if (src.contains('${sino[i]}번') || src.contains('${native[i]}번')) return i + 1;
       }
       return null;
     }
