@@ -194,6 +194,7 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
   void dispose() {
     _bleStateSub?.cancel();
     _discoverySub?.cancel();
+    _autoScanSub?.cancel();
     _connStateSub?.cancel();
     _notifySub?.cancel();
     _blinkTimer?.cancel();
@@ -247,6 +248,42 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
     });
 
     setState(() => _bleStatus = '준비됨 — 페어링에서 전자찌 검색');
+
+    // 등록된 찌 자동 연결 시도 (한 번 페어링해두면 다음부터 자동)
+    await Future.delayed(const Duration(milliseconds: 800));
+    _autoReconnect();
+  }
+
+  // ── 등록된 찌 자동 연결 ──────────────────────────
+  // 이전에 연결했던 찌(UUID 저장됨)를 스캔해서 자동으로 붙임
+  StreamSubscription? _autoScanSub;
+  void _autoReconnect() async {
+    if (_slotAssignments.isEmpty) return;   // 등록된 찌 없으면 skip
+    final known = _slotAssignments.keys.toSet();
+    setState(() => _bleStatus = '등록된 찌 자동 연결 중...');
+
+    _autoScanSub?.cancel();
+    _autoScanSub = _central.discovered.listen((event) async {
+      final uuid = event.peripheral.uuid.toString();
+      final already = _connectedFloats.values
+          .any((d) => d.peripheral.uuid == event.peripheral.uuid);
+      if (known.contains(uuid) && !already) {
+        try {
+          await _central.connect(event.peripheral);
+        } catch (_) {}
+      }
+    });
+    try { await _central.startDiscovery(); } catch (_) {}
+
+    // 25초간 스캔 후 정리 (그동안 켜진 찌 다 잡음)
+    Future.delayed(const Duration(seconds: 25), () {
+      _autoScanSub?.cancel();
+      _autoScanSub = null;
+      try { _central.stopDiscovery(); } catch (_) {}
+      if (mounted && _connectedFloats.isNotEmpty) {
+        setState(() => _bleStatus = '${_connectedFloats.length}개 자동 연결됨');
+      }
+    });
   }
 
   int? _slotOf(Peripheral p) {
@@ -1189,6 +1226,16 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
           Navigator.pop(ctx);
           await _central.connect(peripheral);
         },
+        onConnectAll: (peripherals) async {
+          Navigator.pop(ctx);
+          setState(() => _bleStatus = '${peripherals.length}개 일괄 연결 중...');
+          for (final p in peripherals) {
+            try {
+              await _central.connect(p);
+              await Future.delayed(const Duration(milliseconds: 400));
+            } catch (_) {}
+          }
+        },
         connectedUUIDs: _connectedFloats.values
             .map((d) => d.peripheral.uuid)
             .toSet(),
@@ -1860,12 +1907,14 @@ class _PairingScannerWidget extends StatefulWidget {
   final CentralManager central;
   final UUID serviceUUID;
   final Future<void> Function(Peripheral) onConnect;
+  final Future<void> Function(List<Peripheral>) onConnectAll;
   final Set<UUID> connectedUUIDs;
 
   const _PairingScannerWidget({
     required this.central,
     required this.serviceUUID,
     required this.onConnect,
+    required this.onConnectAll,
     required this.connectedUUIDs,
   });
 
@@ -1969,7 +2018,34 @@ class _PairingScannerWidgetState extends State<_PairingScannerWidget>
                   color: Colors.blueAccent, size: 40),
             ],
           ),
-          const SizedBox(height: 30),
+          const SizedBox(height: 16),
+          // 모두 연결 버튼 — 검색된 미연결 찌를 한 번에
+          Builder(builder: (ctx) {
+            final unconnected = _foundDevices
+                .where((e) => !widget.connectedUUIDs.contains(e.peripheral.uuid))
+                .toList();
+            if (unconnected.isEmpty) return const SizedBox.shrink();
+            return Padding(
+              padding: const EdgeInsets.only(bottom: 10),
+              child: SizedBox(
+                width: double.infinity,
+                child: ElevatedButton.icon(
+                  onPressed: () => widget.onConnectAll(
+                      unconnected.map((e) => e.peripheral).toList()),
+                  icon: const Icon(Icons.done_all, color: Colors.white),
+                  label: Text('모두 연결 (${unconnected.length}개)',
+                      style: const TextStyle(
+                          color: Colors.white, fontWeight: FontWeight.bold)),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.blueAccent,
+                    padding: const EdgeInsets.symmetric(vertical: 12),
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12)),
+                  ),
+                ),
+              ),
+            );
+          }),
           // 발견된 기기 목록
           Expanded(
             child: _foundDevices.isEmpty
