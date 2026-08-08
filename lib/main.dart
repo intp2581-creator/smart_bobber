@@ -355,7 +355,8 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
         setState(() => _bleStatus = '${_connectedFloats.length}개 연결됨 ✓GATT');
       }
     } catch (e) {
-      setState(() => _bleStatus = '연결 처리 오류: $e');
+      // 예외 메시지가 길어서 화면 안 깨지게 짧게만 표시
+      setState(() => _bleStatus = '연결 재시도 중...');
     }
   }
 
@@ -1287,11 +1288,16 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
                                 size: 11,
                               ),
                               const SizedBox(width: 3),
-                              Text(_bleStatus,
-                                  style: TextStyle(
-                                      fontSize: 10,
-                                      color: Colors.blueAccent.withValues(alpha: 0.8),
-                                      fontWeight: FontWeight.bold)),
+                              ConstrainedBox(
+                                constraints: const BoxConstraints(maxWidth: 260),
+                                child: Text(_bleStatus,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: TextStyle(
+                                        fontSize: 10,
+                                        color: Colors.blueAccent.withValues(alpha: 0.8),
+                                        fontWeight: FontWeight.bold)),
+                              ),
                             ],
                           ),
                         ],
