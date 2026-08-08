@@ -597,7 +597,6 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
     if (!_speechAvailable || _isListening) return;
     setState(() { _isListening = true; _voiceText = '듣는 중...'; });
     await _speech.listen(
-      localeId: 'ko_KR',
       onResult: (result) {
         if (!mounted) return;
         setState(() => _voiceText = result.recognizedWords);
@@ -618,8 +617,15 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
           }
         }
       },
-      listenFor: const Duration(seconds: 10),
-      pauseFor: const Duration(milliseconds: 2000),  // 말 시작 전 여유 + 끝나고 2초 (너무 짧으면 말하기 전에 끝남)
+      // dictation 모드 = 문장 중간 멈춤 견딤(말하다 끊기는 문제 해결)
+      listenOptions: SpeechListenOptions(
+        localeId: 'ko_KR',
+        listenMode: ListenMode.dictation,
+        partialResults: true,
+        cancelOnError: false,
+        listenFor: const Duration(seconds: 30),
+        pauseFor: const Duration(seconds: 4),  // 말 끝나고 4초 침묵해야 종료
+      ),
     );
   }
 
