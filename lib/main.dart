@@ -256,12 +256,15 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
 
   // ── 등록된 찌 자동 연결 ──────────────────────────
   // 이전에 연결했던 찌(UUID 저장됨)를 스캔해서 자동으로 붙임
+  // ⚠️ 스캔 중엔 연결기기 알림(입질)이 끊기므로, 등록 찌 다 붙으면 즉시 스캔 종료
   StreamSubscription? _autoScanSub;
+  bool _autoScanning = false;
   void _autoReconnect() async {
     if (_slotAssignments.isEmpty) return;   // 등록된 찌 없으면 skip
     final known = _slotAssignments.keys.toSet();
     setState(() => _bleStatus = '등록된 찌 자동 연결 중...');
 
+    _autoScanning = true;
     _autoScanSub?.cancel();
     _autoScanSub = _central.discovered.listen((event) async {
       final uuid = event.peripheral.uuid.toString();
@@ -271,19 +274,27 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
         try {
           await _central.connect(event.peripheral);
         } catch (_) {}
+        // 등록된 찌를 모두 연결했으면 즉시 스캔 종료 (알림 방해 방지)
+        if (_connectedFloats.length >= known.length) _stopAutoScan();
       }
     });
     try { await _central.startDiscovery(); } catch (_) {}
 
-    // 25초간 스캔 후 정리 (그동안 켜진 찌 다 잡음)
-    Future.delayed(const Duration(seconds: 25), () {
-      _autoScanSub?.cancel();
-      _autoScanSub = null;
-      try { _central.stopDiscovery(); } catch (_) {}
-      if (mounted && _connectedFloats.isNotEmpty) {
-        setState(() => _bleStatus = '${_connectedFloats.length}개 자동 연결됨');
-      }
-    });
+    // 최대 12초 후 스캔 종료 (그동안 안 켜진 찌는 페어링에서 수동 연결)
+    Future.delayed(const Duration(seconds: 12), _stopAutoScan);
+  }
+
+  void _stopAutoScan() {
+    if (!_autoScanning) return;
+    _autoScanning = false;
+    _autoScanSub?.cancel();
+    _autoScanSub = null;
+    try { _central.stopDiscovery(); } catch (_) {}
+    if (mounted) {
+      setState(() => _bleStatus = _connectedFloats.isEmpty
+          ? '준비됨 — 페어링에서 전자찌 검색'
+          : '${_connectedFloats.length}개 연결됨');
+    }
   }
 
   int? _slotOf(Peripheral p) {
@@ -1220,6 +1231,7 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
   }
 
   void _showPairingScanner() {
+    _stopAutoScan();   // 자동 스캔 멈추고 수동 페어링 (중복 스캔 방지)
     showModalBottomSheet(
       context: context,
       backgroundColor: Colors.black.withValues(alpha: 0.85),
