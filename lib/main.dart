@@ -1970,7 +1970,16 @@ class _PairingScannerWidgetState extends State<_PairingScannerWidget>
       final isKreft = name.contains('KREFT') ||
           serviceUUIDs.any((u) => u == widget.serviceUUID);
       if (!isKreft) return;
-      if (_foundDevices.any((d) => d.peripheral.uuid == event.peripheral.uuid)) return;
+      // 같은 이름은 하나만 (블루투스 주소 회전으로 중복 뜨는 것 방지)
+      if (name.isNotEmpty &&
+          _foundDevices.any((d) => (d.advertisement.name ?? '') == name)) {
+        return;
+      }
+      // 이름 없는 기기는 UUID로 중복 체크
+      if (name.isEmpty &&
+          _foundDevices.any((d) => d.peripheral.uuid == event.peripheral.uuid)) {
+        return;
+      }
       setState(() => _foundDevices.add(event));
     });
 
