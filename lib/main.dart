@@ -10,6 +10,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 
 // BLE UUIDs
 final _serviceUUID     = UUID.fromString('0000FFE0-0000-1000-8000-00805F9B34FB');
@@ -75,6 +76,7 @@ class _FloatDevice {
   GATTCharacteristic? commandChar;
   bool isOn = true;
   bool isBite = false;
+  String name = '';        // 기기 고유 이름 (KREFT-XXXX)
 
   _FloatDevice(this.peripheral);
 }
@@ -105,6 +107,13 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
   // UUID 문자열 → 고정 슬롯 번호 (재연결 시 같은 슬롯 유지)
   final Map<String, int> _slotAssignments = {};
   String _bleStatus = 'BLE 초기화 중...';
+
+  // ── 내 찌 등록 & 소유권 잠금 (도난·분실 방지) ──
+  // 기기이름(KREFT-XXXX) → 소유자 키. 잠긴 찌는 이 키로만 제어 가능
+  final Map<String, String> _myFloats = {};   // 이름 → key
+  String _ownerKey = '';                       // 내 소유자 키(기기 공통)
+  // 스캔 중 확인한 UUID → 광고 이름 (연결 후 이름 참조용)
+  final Map<String, String> _discoveredNames = {};
 
   StreamSubscription? _bleStateSub;
   StreamSubscription? _discoverySub;
@@ -170,7 +179,35 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
           map.forEach((k, v) => _slotAssignments[k] = v as int);
         } catch (_) {}
       }
+
+      // 내 찌 등록 목록 & 소유자 키 복원
+      _ownerKey = prefs.getString('ownerKey') ?? '';
+      final myJson = prefs.getString('myFloats');
+      if (myJson != null) {
+        try {
+          final map = jsonDecode(myJson) as Map<String, dynamic>;
+          _myFloats.clear();
+          map.forEach((k, v) => _myFloats[k] = v as String);
+        } catch (_) {}
+      }
     });
+  }
+
+  // 소유자 키 생성 (기기당 1개, 12자리 영숫자)
+  Future<String> _ensureOwnerKey() async {
+    if (_ownerKey.isNotEmpty) return _ownerKey;
+    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+    final rnd = Random.secure();
+    final key = List.generate(12, (_) => chars[rnd.nextInt(chars.length)]).join();
+    setState(() => _ownerKey = key);
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('ownerKey', key);
+    return key;
+  }
+
+  Future<void> _saveMyFloats() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('myFloats', jsonEncode(_myFloats));
   }
 
   Future<void> _saveSettings() async {
@@ -268,6 +305,8 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
     _autoScanSub?.cancel();
     _autoScanSub = _central.discovered.listen((event) async {
       final uuid = event.peripheral.uuid.toString();
+      final advName = event.advertisement.name;
+      if (advName != null && advName.isNotEmpty) _discoveredNames[uuid] = advName;
       final already = _connectedFloats.values
           .any((d) => d.peripheral.uuid == event.peripheral.uuid);
       if (known.contains(uuid) && !already) {
@@ -322,6 +361,7 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
       }
 
       final device = _FloatDevice(peripheral);
+      device.name = _discoveredNames[uuidStr] ?? '';
       _connectedFloats[slot] = device;
       setState(() => _bleStatus = '${_connectedFloats.length}개 연결됨');
 
@@ -391,7 +431,10 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
     final chr = device.commandChar!;
     final p = device.peripheral;
 
-    final cmds = [
+    final cmds = <String>[
+      // 잠긴 찌는 인증을 먼저 통과해야 명령을 받음 (내 찌로 등록된 경우)
+      if (device.name.isNotEmpty && _myFloats.containsKey(device.name))
+        'AUTH:${_myFloats[device.name]}',
       device.isOn ? 'ON' : 'OFF',
       'COLOR:${_preset.r},${_preset.g},${_preset.b}',
       'BRIGHTNESS:${_brightnessValue.toStringAsFixed(2)}',
@@ -444,6 +487,59 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
   // 탭: 해당 찌 LED 깜빡임 → 물 위에서 위치 확인
   void _blinkFloat(int slot) {
     _sendCommandToSlot(slot, 'BLINK');
+  }
+
+  // ── 소유권 잠금 (도난·분실 방지) ────────────────────
+  // 연결된 찌를 내 것으로 등록하고 잠금 → 다른 사람 앱에서 제어 불가
+  Future<void> _lockFloat(_FloatDevice device) async {
+    if (device.name.isEmpty) return;
+    final key = await _ensureOwnerKey();
+    await _sendCommandToDevice(device, 'LOCK:$key');
+    setState(() => _myFloats[device.name] = key);
+    await _saveMyFloats();
+  }
+
+  // 잠금 해제 (중고 양도 시) → 새 주인이 다시 등록 가능
+  Future<void> _unlockFloat(_FloatDevice device) async {
+    if (device.name.isEmpty) return;
+    final key = _myFloats[device.name];
+    if (key == null) return;
+    await _sendCommandToDevice(device, 'UNLOCK:$key');
+    setState(() => _myFloats.remove(device.name));
+    await _saveMyFloats();
+  }
+
+  Future<void> _sendCommandToDevice(_FloatDevice device, String cmd) async {
+    if (device.commandChar == null) return;
+    try {
+      await _central.writeCharacteristic(
+        device.peripheral,
+        device.commandChar!,
+        value: Uint8List.fromList(utf8.encode(cmd)),
+        type: GATTCharacteristicWriteType.withoutResponse,
+      );
+    } catch (_) {}
+  }
+
+  // 연결된 찌 전체 잠금 / 해제
+  Future<void> _lockAll() async {
+    for (final d in _connectedFloats.values) {
+      if (d.name.isNotEmpty && !_myFloats.containsKey(d.name)) {
+        await _lockFloat(d);
+        await Future.delayed(const Duration(milliseconds: 200));
+      }
+    }
+    setState(() => _bleStatus = '내 찌 ${_myFloats.length}개 등록·잠금됨');
+  }
+
+  Future<void> _unlockAll() async {
+    for (final d in _connectedFloats.values) {
+      if (_myFloats.containsKey(d.name)) {
+        await _unlockFloat(d);
+        await Future.delayed(const Duration(milliseconds: 200));
+      }
+    }
+    setState(() => _bleStatus = '잠금 해제됨 (양도 가능)');
   }
 
   // 앱 UI 깜빡임 타이머 (150ms 주기, 5색 순환 — 물리 찌와 동기화)
@@ -1021,6 +1117,166 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
     );
   }
 
+  // 내 찌 등록·잠금 관리 화면 (도난·분실 방지)
+  void _showMyFloatsSheet() {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.black.withValues(alpha: 0.92),
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setSheet) {
+          final connected = _connectedFloats.entries.toList()
+            ..sort((a, b) => a.key.compareTo(b.key));
+          return Container(
+            padding: const EdgeInsets.fromLTRB(20, 20, 20, 24),
+            height: MediaQuery.of(ctx).size.height * 0.75,
+            child: Column(
+              children: [
+                const Text('내 찌 등록 · 잠금',
+                    style: TextStyle(
+                        fontSize: 17,
+                        fontWeight: FontWeight.bold,
+                        letterSpacing: 1.2,
+                        color: Colors.white)),
+                const SizedBox(height: 6),
+                const Text('잠근 찌는 다른 사람 폰에서 사용할 수 없습니다',
+                    style: TextStyle(fontSize: 11, color: Colors.white38)),
+                const SizedBox(height: 4),
+                Text('등록된 내 찌: ${_myFloats.length}개',
+                    style: const TextStyle(
+                        fontSize: 12, color: Colors.amberAccent, fontWeight: FontWeight.bold)),
+                const SizedBox(height: 14),
+                // 전체 잠금 / 해제
+                Row(
+                  children: [
+                    Expanded(
+                      child: ElevatedButton.icon(
+                        onPressed: connected.isEmpty
+                            ? null
+                            : () async {
+                                await _lockAll();
+                                setSheet(() {});
+                              },
+                        icon: const Icon(Icons.lock, size: 18, color: Colors.white),
+                        label: const Text('전체 등록·잠금',
+                            style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.blueAccent,
+                          padding: const EdgeInsets.symmetric(vertical: 12),
+                          shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(10)),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        onPressed: _myFloats.isEmpty
+                            ? null
+                            : () async {
+                                final ok = await _confirmUnlockAll(ctx);
+                                if (ok == true) {
+                                  await _unlockAll();
+                                  setSheet(() {});
+                                }
+                              },
+                        icon: const Icon(Icons.lock_open, size: 18, color: Colors.redAccent),
+                        label: const Text('전체 해제 (양도)',
+                            style: TextStyle(color: Colors.redAccent)),
+                        style: OutlinedButton.styleFrom(
+                          side: const BorderSide(color: Colors.redAccent),
+                          padding: const EdgeInsets.symmetric(vertical: 12),
+                          shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(10)),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 14),
+                const Divider(color: Colors.white12, height: 1),
+                // 연결된 찌 목록
+                Expanded(
+                  child: connected.isEmpty
+                      ? const Center(
+                          child: Text('연결된 찌가 없습니다\n(페어링에서 먼저 연결하세요)',
+                              textAlign: TextAlign.center,
+                              style: TextStyle(color: Colors.white30, fontSize: 13)))
+                      : ListView.builder(
+                          itemCount: connected.length,
+                          itemBuilder: (c, i) {
+                            final slot = connected[i].key;
+                            final dev = connected[i].value;
+                            final name = dev.name.isEmpty ? '(이름없음)' : dev.name;
+                            final mine = _myFloats.containsKey(dev.name);
+                            return ListTile(
+                              contentPadding: EdgeInsets.zero,
+                              leading: Icon(
+                                mine ? Icons.lock : Icons.lock_open,
+                                color: mine ? Colors.greenAccent : Colors.white30,
+                              ),
+                              title: Text('$slot번  $name',
+                                  style: TextStyle(
+                                      color: mine ? Colors.greenAccent : Colors.white70,
+                                      fontSize: 14,
+                                      fontWeight: FontWeight.bold)),
+                              subtitle: Text(
+                                  mine ? '내 찌 (잠금됨)' : '미등록 — 누구나 사용 가능',
+                                  style: TextStyle(
+                                      color: mine ? Colors.greenAccent.withValues(alpha: 0.6) : Colors.white30,
+                                      fontSize: 11)),
+                              trailing: dev.name.isEmpty
+                                  ? null
+                                  : TextButton(
+                                      onPressed: () async {
+                                        if (mine) {
+                                          await _unlockFloat(dev);
+                                        } else {
+                                          await _lockFloat(dev);
+                                        }
+                                        setSheet(() {});
+                                      },
+                                      child: Text(mine ? '해제' : '등록',
+                                          style: TextStyle(
+                                              color: mine ? Colors.redAccent : Colors.blueAccent,
+                                              fontWeight: FontWeight.bold)),
+                                    ),
+                            );
+                          },
+                        ),
+                ),
+              ],
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  Future<bool?> _confirmUnlockAll(BuildContext ctx) {
+    return showDialog<bool>(
+      context: ctx,
+      builder: (d) => AlertDialog(
+        backgroundColor: const Color(0xFF1A1D23),
+        title: const Text('전체 잠금 해제',
+            style: TextStyle(color: Colors.white, fontSize: 16)),
+        content: const Text(
+            '잠금을 해제하면 다른 사람도 이 찌를 등록해 사용할 수 있습니다.\n중고 양도 시에만 사용하세요.',
+            style: TextStyle(color: Colors.white70, fontSize: 13)),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(d, false),
+              child: const Text('취소', style: TextStyle(color: Colors.white54))),
+          TextButton(
+              onPressed: () => Navigator.pop(d, true),
+              child: const Text('해제', style: TextStyle(color: Colors.redAccent))),
+        ],
+      ),
+    );
+  }
+
   void _showModeSelector() {
     showModalBottomSheet(
       context: context,
@@ -1258,6 +1514,8 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
         connectedUUIDs: _connectedFloats.values
             .map((d) => d.peripheral.uuid)
             .toSet(),
+        myFloatNames: _myFloats.keys.toSet(),
+        onDiscovered: (uuid, name) => _discoveredNames[uuid] = name,
       ),
     );
   }
@@ -1522,6 +1780,10 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
                                 icon: Icons.sort,
                                 label: '정렬',
                                 onTap: _startSortWizard),
+                            _BottomMenu(
+                                icon: _myFloats.isEmpty ? Icons.lock_open : Icons.lock,
+                                label: '내 찌',
+                                onTap: _showMyFloatsSheet),
                             InkWell(
                               onTap: _toggleNotifyMode,
                               borderRadius: BorderRadius.circular(10),
@@ -1933,6 +2195,8 @@ class _PairingScannerWidget extends StatefulWidget {
   final Future<void> Function(Peripheral) onConnect;
   final Future<void> Function(List<Peripheral>) onConnectAll;
   final Set<UUID> connectedUUIDs;
+  final Set<String> myFloatNames;                       // 내 찌로 등록·잠금된 이름
+  final void Function(String uuid, String name) onDiscovered;
 
   const _PairingScannerWidget({
     required this.central,
@@ -1940,6 +2204,8 @@ class _PairingScannerWidget extends StatefulWidget {
     required this.onConnect,
     required this.onConnectAll,
     required this.connectedUUIDs,
+    required this.myFloatNames,
+    required this.onDiscovered,
   });
 
   @override
@@ -1970,6 +2236,9 @@ class _PairingScannerWidgetState extends State<_PairingScannerWidget>
       final isKreft = name.contains('KREFT') ||
           serviceUUIDs.any((u) => u == widget.serviceUUID);
       if (!isKreft) return;
+      if (name.isNotEmpty) {
+        widget.onDiscovered(event.peripheral.uuid.toString(), name);
+      }
       // 같은 이름은 하나만 (블루투스 주소 회전으로 중복 뜨는 것 방지)
       if (name.isNotEmpty &&
           _foundDevices.any((d) => (d.advertisement.name ?? '') == name)) {
@@ -2093,14 +2362,19 @@ class _PairingScannerWidgetState extends State<_PairingScannerWidget>
                       final name = event.advertisement.name ?? 'KREFT Float';
                       final alreadyConnected = widget.connectedUUIDs
                           .contains(event.peripheral.uuid);
+                      final isMine = widget.myFloatNames.contains(name);
                       return ListTile(
-                        leading: const Icon(Icons.waves,
-                            color: Colors.greenAccent),
+                        leading: Icon(
+                            isMine ? Icons.lock : Icons.waves,
+                            color: isMine ? Colors.amberAccent : Colors.greenAccent),
                         title: Text(
-                            '★ $name',
-                            style: const TextStyle(color: Colors.greenAccent)),
+                            isMine ? '🔒 $name' : '★ $name',
+                            style: TextStyle(
+                                color: isMine ? Colors.amberAccent : Colors.greenAccent)),
                         subtitle: Text(
-                            '신호 강도: ${event.rssi} dBm',
+                            isMine
+                                ? '내 찌 · 신호 강도: ${event.rssi} dBm'
+                                : '신호 강도: ${event.rssi} dBm',
                             style: TextStyle(
                                 color: Colors.white.withValues(alpha: 0.4),
                                 fontSize: 11)),
