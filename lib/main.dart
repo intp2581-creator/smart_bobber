@@ -112,6 +112,7 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
   // 기기이름(KREFT-XXXX) → 소유자 키. 잠긴 찌는 이 키로만 제어 가능
   final Map<String, String> _myFloats = {};   // 이름 → key
   String _ownerKey = '';                       // 내 소유자 키(기기 공통)
+  String _ownerNick = '';                      // 주인 닉네임 — 습득자가 볼 이름
   // 스캔 중 확인한 UUID → 광고 이름 (연결 후 이름 참조용)
   final Map<String, String> _discoveredNames = {};
 
@@ -180,8 +181,9 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
         } catch (_) {}
       }
 
-      // 내 찌 등록 목록 & 소유자 키 복원
+      // 내 찌 등록 목록 & 소유자 키·닉네임 복원
       _ownerKey = prefs.getString('ownerKey') ?? '';
+      _ownerNick = prefs.getString('ownerNick') ?? '';
       final myJson = prefs.getString('myFloats');
       if (myJson != null) {
         try {
@@ -494,9 +496,63 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
   Future<void> _lockFloat(_FloatDevice device) async {
     if (device.name.isEmpty) return;
     final key = await _ensureOwnerKey();
-    await _sendCommandToDevice(device, 'LOCK:$key');
+    // LOCK:키:닉네임 — 닉네임은 습득자가 주인을 알아볼 수 있게 찌 광고에 노출됨
+    final nick = _ownerNick.isEmpty ? '' : ':$_ownerNick';
+    await _sendCommandToDevice(device, 'LOCK:$key$nick');
     setState(() => _myFloats[device.name] = key);
     await _saveMyFloats();
+  }
+
+  // 닉네임 입력 (최초 1회만 — 이후 모든 찌에 같은 닉네임 사용)
+  Future<bool> _ensureOwnerNick() async {
+    if (_ownerNick.isNotEmpty) return true;
+    final ctrl = TextEditingController();
+    final nick = await showDialog<String>(
+      context: context,
+      builder: (d) => AlertDialog(
+        backgroundColor: const Color(0xFF1A1D23),
+        title: const Text('닉네임 설정',
+            style: TextStyle(color: Colors.white, fontSize: 16)),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+                '찌를 잃어버렸을 때 주운 사람이 볼 이름입니다.\n한 번만 입력하면 모든 찌에 적용됩니다.',
+                style: TextStyle(color: Colors.white70, fontSize: 12)),
+            const SizedBox(height: 12),
+            TextField(
+              controller: ctrl,
+              maxLength: 12,
+              style: const TextStyle(color: Colors.white),
+              decoration: const InputDecoration(
+                hintText: '예: 손맛왕',
+                hintStyle: TextStyle(color: Colors.white24),
+                counterStyle: TextStyle(color: Colors.white24),
+                enabledBorder: UnderlineInputBorder(
+                    borderSide: BorderSide(color: Colors.white24)),
+                focusedBorder: UnderlineInputBorder(
+                    borderSide: BorderSide(color: Colors.blueAccent)),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(d),
+              child: const Text('취소', style: TextStyle(color: Colors.white54))),
+          TextButton(
+              onPressed: () => Navigator.pop(d, ctrl.text.trim()),
+              child: const Text('확인',
+                  style: TextStyle(color: Colors.blueAccent))),
+        ],
+      ),
+    );
+    if (nick == null || nick.isEmpty) return false;
+    setState(() => _ownerNick = nick);
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('ownerNick', nick);
+    return true;
   }
 
   // 잠금 해제 (중고 양도 시) → 새 주인이 다시 등록 가능
@@ -523,6 +579,7 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
 
   // 연결된 찌 전체 잠금 / 해제
   Future<void> _lockAll() async {
+    if (!await _ensureOwnerNick()) return;   // 닉네임 최초 1회 입력
     for (final d in _connectedFloats.values) {
       if (d.name.isNotEmpty && !_myFloats.containsKey(d.name)) {
         await _lockFloat(d);
@@ -1144,7 +1201,10 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
                 const Text('잠근 찌는 다른 사람 폰에서 사용할 수 없습니다',
                     style: TextStyle(fontSize: 11, color: Colors.white38)),
                 const SizedBox(height: 4),
-                Text('등록된 내 찌: ${_myFloats.length}개',
+                Text(
+                    _ownerNick.isEmpty
+                        ? '등록된 내 찌: ${_myFloats.length}개'
+                        : '$_ownerNick 님 · 등록된 내 찌: ${_myFloats.length}개',
                     style: const TextStyle(
                         fontSize: 12, color: Colors.amberAccent, fontWeight: FontWeight.bold)),
                 const SizedBox(height: 14),
@@ -1234,6 +1294,7 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
                                         if (mine) {
                                           await _unlockFloat(dev);
                                         } else {
+                                          if (!await _ensureOwnerNick()) return;
                                           await _lockFloat(dev);
                                         }
                                         setSheet(() {});
@@ -2387,20 +2448,34 @@ class _PairingScannerWidgetState extends State<_PairingScannerWidget>
                       final alreadyConnected = widget.connectedUUIDs
                           .contains(event.peripheral.uuid);
                       final isMine = widget.myFloatNames.contains(name);
+                      // "KREFT-A001·손맛왕" → 고유번호와 주인 닉네임 분리
+                      final dot = name.indexOf('·');
+                      final ownerNick = dot > 0 ? name.substring(dot + 1) : '';
+                      final isOthers = !isMine && ownerNick.isNotEmpty;
                       return ListTile(
                         leading: Icon(
-                            isMine ? Icons.lock : Icons.waves,
-                            color: isMine ? Colors.amberAccent : Colors.greenAccent),
+                            isMine
+                                ? Icons.lock
+                                : (isOthers ? Icons.person : Icons.waves),
+                            color: isMine
+                                ? Colors.amberAccent
+                                : (isOthers ? Colors.orangeAccent : Colors.greenAccent)),
                         title: Text(
-                            isMine ? '🔒 $name' : '★ $name',
+                            isMine ? '🔒 $name' : (isOthers ? '👤 $name' : '★ $name'),
                             style: TextStyle(
-                                color: isMine ? Colors.amberAccent : Colors.greenAccent)),
+                                color: isMine
+                                    ? Colors.amberAccent
+                                    : (isOthers ? Colors.orangeAccent : Colors.greenAccent))),
                         subtitle: Text(
                             isMine
                                 ? '내 찌 · 신호 강도: ${event.rssi} dBm'
-                                : '신호 강도: ${event.rssi} dBm',
+                                : (isOthers
+                                    ? '$ownerNick 님의 찌 — 습득 시 캠피싱에 신고해주세요'
+                                    : '신호 강도: ${event.rssi} dBm'),
                             style: TextStyle(
-                                color: Colors.white.withValues(alpha: 0.4),
+                                color: isOthers
+                                    ? Colors.orangeAccent.withValues(alpha: 0.7)
+                                    : Colors.white.withValues(alpha: 0.4),
                                 fontSize: 11)),
                         trailing: alreadyConnected
                             ? const Text('연결됨',
