@@ -305,6 +305,10 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
         // 단일 찌 레거시 신호: 연결된 슬롯으로 처리
         final slot = _slotOf(args.peripheral);
         if (slot != null) _triggerBiteAlert(slot);
+      } else if (msg == 'LOCK:FAIL' || msg == 'AUTH:FAIL') {
+        // 이 찌는 다른 키로 잠겨 있어 제어할 수 없다 → 사용자에게 알린다
+        final slot = _slotOf(args.peripheral);
+        _onLockRejected(slot);
       }
     });
 
@@ -534,6 +538,38 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
 
   // ── 소유권 잠금 (도난·분실 방지) ────────────────────
   // 연결된 찌를 내 것으로 등록하고 잠금 → 다른 사람 앱에서 제어 불가
+  // 잠금 거부 — 다른 주인(또는 이전 등록)의 키로 잠겨 있어 제어가 안 되는 상태
+  bool _lockAlertShown = false;
+  void _onLockRejected(int? slot) {
+    final name = slot != null ? '$slot번 찌' : '일부 찌';
+    setState(() => _bleStatus = '⚠ $name는 다른 사람 잠금 상태 — 제어 불가');
+    if (_lockAlertShown || !mounted) return;
+    _lockAlertShown = true;
+    showDialog(
+      context: context,
+      builder: (d) => AlertDialog(
+        backgroundColor: const Color(0xFF1A1D23),
+        title: const Text('잠긴 찌가 있습니다',
+            style: TextStyle(color: Colors.white, fontSize: 18)),
+        content: const Text(
+            '이 찌는 다른 사람(또는 이전 등록)의 잠금이 걸려 있어\n'
+            '제어할 수 없습니다.\n\n'
+            '본인 찌라면 이전에 등록했던 폰에서\n'
+            '[내 찌] → [전체 해제]를 한 뒤 다시 등록해 주세요.',
+            style: TextStyle(color: Colors.white70, fontSize: 14, height: 1.5)),
+        actions: [
+          TextButton(
+              onPressed: () {
+                _lockAlertShown = false;
+                Navigator.pop(d);
+              },
+              child: const Text('확인',
+                  style: TextStyle(color: Colors.blueAccent, fontSize: 16))),
+        ],
+      ),
+    );
+  }
+
   // 찌를 식별하는 키 — 광고 이름이 없으면 UUID로 대신한다
   String _idOf(_FloatDevice d) =>
       d.name.isNotEmpty ? d.name : d.peripheral.uuid.toString();
