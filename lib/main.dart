@@ -1463,9 +1463,12 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
         backgroundColor: const Color(0xFF1A1D23),
         title: const Text('오늘은 몇 대 편성하셨나요?',
             style: TextStyle(color: Colors.white, fontSize: 18)),
+        insetPadding:
+            const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
         content: SizedBox(
           width: double.maxFinite,
-          child: Column(
+          child: SingleChildScrollView(   // 화면이 낮아도 넘치지 않게
+            child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
               Text('등록된 찌 $total개 중에서 고르세요',
@@ -1501,6 +1504,7 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
                 ),
               ),
             ],
+          ),
           ),
         ),
         actions: [
@@ -2405,9 +2409,9 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
                               ),
                               const SizedBox(width: 4),
                               ConstrainedBox(
-                                constraints: const BoxConstraints(maxWidth: 260),
+                                constraints: const BoxConstraints(maxWidth: 420),
                                 child: Text(_bleStatus,
-                                    maxLines: 1,
+                                    maxLines: 2,
                                     overflow: TextOverflow.ellipsis,
                                     style: const TextStyle(
                                         fontSize: 13,
@@ -2851,12 +2855,17 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
     _pickTimer?.cancel();
     _blinkTimer?.cancel();
     _stopAutoScan();
+    _notifySub?.cancel();          // 입질 알림 수신 중단
     for (final d in _connectedFloats.values) {
       try {
         await _central.disconnect(d.peripheral);
       } catch (_) {}
+      await Future.delayed(const Duration(milliseconds: 200));
     }
     await SystemNavigator.pop();
+    // 일부 기기는 위 호출로 화면이 남아 있어 프로세스를 확실히 종료한다
+    await Future.delayed(const Duration(milliseconds: 300));
+    exit(0);
   }
 
   // 정렬 마법사 오버레이 — 깜빡이는 찌의 실제 자리 번호를 탭/음성으로 지정
