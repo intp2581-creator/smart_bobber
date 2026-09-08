@@ -117,6 +117,14 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
   // 찌 고르기(찌함에서 꺼내는 중) 상태
   bool _picking = false;
   Timer? _pickTimer;
+
+  // 오늘 편성 확인 흐름
+  bool _startupAsked = false;          // 이번 실행에서 "몇 대 편성?" 물었는지
+  bool _identifyMode = false;          // 수동으로 물에 있는 찌 찾는 중
+  List<_FloatDevice> _identifyQueue = [];   // 후보 전체 (등록된 찌)
+  int _identifyIndex = 0;              // 지금 깜빡이는 후보
+  final List<_FloatDevice> _identified = [];  // 물에 있다고 확인된 찌
+  int _identifyTarget = 0;             // 찾아야 할 개수
   // 스캔 중 확인한 UUID → 광고 이름 (연결 후 이름 참조용). 앱 재시작해도 유지
   final Map<String, String> _discoveredNames = {};
 
@@ -357,6 +365,10 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
       setState(() => _bleStatus = _connectedFloats.isEmpty
           ? '준비됨 — 페어링에서 전자찌 검색'
           : '${_connectedFloats.length}개 연결됨');
+      // 등록된 찌가 다 붙었으면 "오늘 몇 대 폈는지"부터 묻는다
+      if (_myFloats.isNotEmpty && _connectedFloats.isNotEmpty) {
+        Future.delayed(const Duration(milliseconds: 600), _askTodayCount);
+      }
     }
   }
 
@@ -1275,6 +1287,206 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
     await pulse();
     // BLINK는 약 3초 후 멈추므로 주기적으로 다시 보내 계속 반짝이게 한다
     _pickTimer = Timer.periodic(const Duration(seconds: 3), (_) => pulse());
+  }
+
+  // ── 낚시 시작 흐름 ─────────────────────────────────────────
+  // 대부분 대를 먼저 펴고 앱을 켜므로, 앱은 "몇 대 폈는지"부터 묻는다.
+  Future<void> _askTodayCount() async {
+    if (_startupAsked || _connectedFloats.isEmpty) return;
+    _startupAsked = true;
+    final total = _connectedFloats.length;
+
+    final n = await showDialog<int>(
+      context: context,
+      barrierDismissible: false,
+      builder: (d) => AlertDialog(
+        backgroundColor: const Color(0xFF1A1D23),
+        title: const Text('오늘은 몇 대 편성하셨나요?',
+            style: TextStyle(color: Colors.white, fontSize: 18)),
+        content: SizedBox(
+          width: double.maxFinite,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text('등록된 찌 $total개 중에서 고르세요',
+                  style: const TextStyle(color: Colors.white54, fontSize: 13)),
+              const SizedBox(height: 14),
+              GridView.builder(
+                shrinkWrap: true,
+                physics: const NeverScrollableScrollPhysics(),
+                itemCount: total,
+                gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                    crossAxisCount: 5,
+                    mainAxisSpacing: 8,
+                    crossAxisSpacing: 8,
+                    childAspectRatio: 1.4),
+                itemBuilder: (c, i) => InkWell(
+                  onTap: () => Navigator.pop(d, i + 1),
+                  child: Container(
+                    alignment: Alignment.center,
+                    decoration: BoxDecoration(
+                      color: Colors.white.withValues(alpha: 0.1),
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: Text('${i + 1}',
+                        style: const TextStyle(
+                            color: Colors.white,
+                            fontWeight: FontWeight.bold,
+                            fontSize: 20)),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(d),
+              child: const Text('나중에',
+                  style: TextStyle(color: Colors.white54))),
+        ],
+      ),
+    );
+    if (n == null || n <= 0) return;
+    await _guessFloatsInWater(n);
+  }
+
+  // 신호가 약한 순 = 멀리 있는 = 물에 던져진 찌로 추정해 n개를 켜본다
+  Future<void> _guessFloatsInWater(int n) async {
+    setState(() => _bleStatus = '물에 있는 찌 확인 중...');
+    final list = _connectedFloats.values.toList();
+    final rssi = <_FloatDevice, int>{};
+    for (final d in list) {
+      try {
+        rssi[d] = await _central.readRSSI(d.peripheral);
+      } catch (_) {
+        rssi[d] = 0;     // 못 읽으면 중간값 취급
+      }
+    }
+    // 약한 순(작은 값)으로 정렬 → 앞에서 n개가 물에 있을 가능성이 높다
+    list.sort((a, b) => (rssi[a] ?? 0).compareTo(rssi[b] ?? 0));
+    final guess = list.take(n).toList();
+
+    // 후보만 켜서 눈으로 확인시킨다
+    for (final d in _connectedFloats.values) {
+      await _sendCommandToDevice(d, guess.contains(d) ? 'ON' : 'OFF');
+      d.isOn = guess.contains(d);
+    }
+    setState(() {
+      for (final e in _connectedFloats.entries) {
+        _floatPowerStates[e.key - 1] = guess.contains(e.value);
+      }
+    });
+
+    if (!mounted) return;
+    final ok = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (d) => AlertDialog(
+        backgroundColor: const Color(0xFF1A1D23),
+        title: const Text('이 찌가 맞나요?',
+            style: TextStyle(color: Colors.white, fontSize: 18)),
+        content: Text(
+            '물에 있는 찌 $n개에 불을 켰습니다.\n켜진 찌가 오늘 쓰실 찌가 맞나요?',
+            style: const TextStyle(color: Colors.white70, fontSize: 14)),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(d, false),
+              child: const Text('아니요',
+                  style: TextStyle(color: Colors.redAccent, fontSize: 16))),
+          TextButton(
+              onPressed: () => Navigator.pop(d, true),
+              child: const Text('확인',
+                  style: TextStyle(
+                      color: Colors.greenAccent,
+                      fontSize: 16,
+                      fontWeight: FontWeight.bold))),
+        ],
+      ),
+    );
+
+    if (ok == true) {
+      await _keepOnly(guess);      // 맞으면 그 8개만 남기고
+      _startSortWizard();          // 바로 정렬로
+    } else {
+      _startIdentify(n);           // 아니면 하나씩 찾기
+    }
+  }
+
+  // 고른 찌만 남기고 나머지는 목록에서 제외(불 끄기)
+  Future<void> _keepOnly(List<_FloatDevice> keep) async {
+    for (final d in _connectedFloats.values) {
+      if (!keep.contains(d)) await _sendCommandToDevice(d, 'OFF');
+    }
+    setState(() {
+      _connectedFloats.clear();
+      for (int i = 0; i < keep.length; i++) {
+        final slot = i + 1;
+        _connectedFloats[slot] = keep[i];
+        _slotAssignments[keep[i].peripheral.uuid.toString()] = slot;
+        _floatPowerStates[i] = true;
+      }
+      for (int i = keep.length; i < _floatPowerStates.length; i++) {
+        _floatPowerStates[i] = false;
+        _floatBiteStates[i] = false;
+      }
+      _floatCount = keep.length;
+    });
+    _saveSlotAssignments();
+    _saveSettings();
+  }
+
+  // 수동 확인 — 등록된 찌를 하나씩 5색으로 깜빡여 물에 있는 것을 찾는다
+  void _startIdentify(int target) {
+    _identifyQueue = _connectedFloats.values.toList();
+    _identified.clear();
+    _identifyIndex = 0;
+    _identifyTarget = target;
+    setState(() => _identifyMode = true);
+    _sendCommandToAll('OFF');
+    _identifyBlinkCurrent();
+  }
+
+  void _identifyBlinkCurrent() {
+    if (_identifyIndex >= _identifyQueue.length) return;
+    final dev = _identifyQueue[_identifyIndex];
+    final slot = _slotOf(dev.peripheral);
+    if (slot != null) {
+      _blinkFloat(slot);
+      setState(() => _blinkingSlots
+        ..clear()
+        ..add(slot));
+      _startBlinkTimer();
+    }
+  }
+
+  // 물에 있다 → 사용 목록에 넣기 / 없다(찌함) → 건너뛰기
+  void _identifyAnswer(bool inWater) {
+    if (!_identifyMode) return;
+    if (inWater && _identifyIndex < _identifyQueue.length) {
+      _identified.add(_identifyQueue[_identifyIndex]);
+    }
+    _identifyIndex++;
+    _blinkingSlots.clear();
+    if (_identified.length >= _identifyTarget ||
+        _identifyIndex >= _identifyQueue.length) {
+      _finishIdentify();
+    } else {
+      setState(() {});
+      _identifyBlinkCurrent();
+    }
+  }
+
+  Future<void> _finishIdentify() async {
+    _blinkTimer?.cancel();
+    _blinkTimer = null;
+    setState(() {
+      _identifyMode = false;
+      _blinkingSlots.clear();
+    });
+    if (_identified.isEmpty) return;
+    await _keepOnly(List.of(_identified));
+    _startSortWizard();     // 다 찾았으면 정렬로
   }
 
   // 걷은 대 고르기 — 중간 번호도 뺄 수 있게 직접 선택시킨다.
@@ -2315,7 +2527,11 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
               ),
 
             // 정렬 마법사 오버레이
+            if (_identifyMode) _buildIdentifyOverlay(),
             if (_sortMode) _buildSortOverlay(),
+            // 아직 내 찌를 등록하지 않았으면 등록부터 안내
+            if (_myFloats.isEmpty && !_identifyMode && !_sortMode)
+              _buildWelcomeOverlay(),
           ],
         ),
       ),
@@ -2323,6 +2539,164 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
   }
 
   // 정렬 마법사 오버레이 — 깜빡이는 찌의 실제 자리 번호를 탭/음성으로 지정
+  // 처음 설치했을 때 — 찌 등록부터 안내
+  Widget _buildWelcomeOverlay() {
+    final connected = _connectedFloats.length;
+    return Positioned.fill(
+      child: Container(
+        color: Colors.black.withValues(alpha: 0.92),
+        child: SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.all(28),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                const Icon(Icons.phonelink_ring,
+                    color: Colors.blueAccent, size: 64),
+                const SizedBox(height: 20),
+                const Text('KREFT 찌를 등록해 주세요',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 22,
+                        fontWeight: FontWeight.bold)),
+                const SizedBox(height: 12),
+                const Text(
+                    '가지고 계신 찌를 모두 켜서 옆에 두고\n아래 버튼을 눌러주세요.\n한 번만 등록하면 다음부터 자동으로 연결됩니다.',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(color: Colors.white70, fontSize: 14, height: 1.6)),
+                const SizedBox(height: 28),
+                if (connected > 0)
+                  Text('찌 $connected개 찾음',
+                      style: const TextStyle(
+                          color: Colors.greenAccent,
+                          fontSize: 16,
+                          fontWeight: FontWeight.bold)),
+                const SizedBox(height: 14),
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton.icon(
+                    onPressed: connected > 0
+                        ? () async {
+                            await _lockAll();       // 닉네임 입력 + 전체 등록·잠금
+                          }
+                        : _showPairingScanner,
+                    icon: Icon(
+                        connected > 0 ? Icons.check_circle : Icons.bluetooth_searching,
+                        color: Colors.white),
+                    label: Text(
+                        connected > 0 ? '찌 $connected개 등록하기' : '찌 찾기',
+                        style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 17,
+                            fontWeight: FontWeight.bold)),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.blueAccent,
+                      padding: const EdgeInsets.symmetric(vertical: 16),
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12)),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 10),
+                TextButton(
+                  onPressed: () => setState(() => _myFloats['__skip__'] = ''),
+                  child: const Text('나중에 하기',
+                      style: TextStyle(color: Colors.white38)),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  // 수동 확인 화면 — 깜빡이는 찌가 물에 있는지 하나씩 확인
+  Widget _buildIdentifyOverlay() {
+    final step = _identifyIndex + 1;
+    final total = _identifyQueue.length;
+    return Positioned.fill(
+      child: Container(
+        color: Colors.black.withValues(alpha: 0.9),
+        child: SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.all(20),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Text('찌 확인  ($step / $total)',
+                    style: const TextStyle(
+                        color: Colors.amberAccent,
+                        fontSize: 20,
+                        fontWeight: FontWeight.bold)),
+                const SizedBox(height: 10),
+                Text('찾은 찌 ${_identified.length} / $_identifyTarget',
+                    style: const TextStyle(
+                        color: Colors.greenAccent, fontSize: 15)),
+                const SizedBox(height: 24),
+                const Text('지금 깜빡이는 찌가',
+                    style: TextStyle(color: Colors.white, fontSize: 17)),
+                const SizedBox(height: 4),
+                const Text('물에 있나요?',
+                    style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 22,
+                        fontWeight: FontWeight.bold)),
+                const SizedBox(height: 8),
+                const Text('찌함 안에서 깜빡이면 [찌함에 있음]을 누르세요',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(color: Colors.white38, fontSize: 13)),
+                const SizedBox(height: 30),
+                Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton(
+                        onPressed: () => _identifyAnswer(false),
+                        style: OutlinedButton.styleFrom(
+                          side: const BorderSide(color: Colors.white38),
+                          padding: const EdgeInsets.symmetric(vertical: 18),
+                          shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(12)),
+                        ),
+                        child: const Text('찌함에 있음',
+                            style: TextStyle(
+                                color: Colors.white70, fontSize: 16)),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: ElevatedButton(
+                        onPressed: () => _identifyAnswer(true),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.green,
+                          padding: const EdgeInsets.symmetric(vertical: 18),
+                          shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(12)),
+                        ),
+                        child: const Text('물에 있음',
+                            style: TextStyle(
+                                color: Colors.white,
+                                fontSize: 17,
+                                fontWeight: FontWeight.bold)),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 16),
+                TextButton(
+                  onPressed: _finishIdentify,
+                  child: const Text('그만하기',
+                      style: TextStyle(color: Colors.white38)),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _buildSortOverlay() {
     final total = _sortQueue.length;
     final step = _sortIndex + 1;
