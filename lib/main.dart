@@ -593,8 +593,14 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
   }
 
   // 찌를 식별하는 키 — 광고 이름이 없으면 UUID로 대신한다
-  String _idOf(_FloatDevice d) =>
-      d.name.isNotEmpty ? d.name : d.peripheral.uuid.toString();
+  // ⚠ 안드로이드는 BLE 주소(UUID)가 계속 바뀌므로 UUID 를 식별자로 쓰면
+  //   같은 찌가 매번 새 항목으로 쌓인다. 반드시 광고 이름(KREFT-XXXX)만 쓴다.
+  //   이름을 아직 못 읽었으면 저장해 둔 이름에서 찾아본다.
+  String _idOf(_FloatDevice d) {
+    if (d.name.isNotEmpty) return d.name;
+    final saved = _discoveredNames[d.peripheral.uuid.toString()];
+    return (saved != null && saved.isNotEmpty) ? saved : '';
+  }
 
   Future<void> _lockFloat(_FloatDevice device) async {
     final key = await _ensureOwnerKey();
@@ -700,12 +706,14 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
     final targets = _connectedFloats.values.toList();
     int done = 0;
     for (final d in targets) {
-      if (_myFloats.containsKey(_idOf(d))) continue;
+      final id = _idOf(d);
+      if (id.isEmpty) continue;          // 이름을 못 읽은 찌는 등록하지 않는다
+      if (_myFloats.containsKey(id)) continue;
       if (alsoLock) {
         await _sendCommandToDevice(d, 'LOCK:$key$nick');
         await Future.delayed(const Duration(milliseconds: 250));
       }
-      _myFloats[_idOf(d)] = key;      // 저장은 아래에서 한 번에
+      _myFloats[id] = key;            // 저장은 아래에서 한 번에
       done++;
     }
     await _saveMyFloats();
@@ -722,14 +730,14 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
         backgroundColor: Colors.green,
         duration: const Duration(seconds: 2),
       ));
-      // 방금 등록했으면 바로 쓸 수 있게 켜 둔다 (다시 검색하라고 뜨지 않게)
-      await _sendCommandToAll('ON');
+      // 등록 직후엔 불을 꺼둔다 (배터리 절약 — 편성할 때 다시 켠다)
+      await _sendCommandToAll('OFF');
       for (final d in _connectedFloats.values) {
-        d.isOn = true;
+        d.isOn = false;
       }
       setState(() {
-        for (final e in _connectedFloats.entries) {
-          _floatPowerStates[e.key - 1] = true;
+        for (int i = 0; i < _floatPowerStates.length; i++) {
+          _floatPowerStates[i] = false;
         }
       });
       // 집에서 미리 세팅할 수도, 물가에서 할 수도 있으니 물어보되 "나중에"를 둔다
@@ -744,8 +752,10 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
     final key = await _ensureOwnerKey();
     final nick = _ownerNick.isEmpty ? '' : ':$_ownerNick';
     for (final d in _connectedFloats.values.toList()) {
+      final id = _idOf(d);
+      if (id.isEmpty) continue;
       await _sendCommandToDevice(d, 'LOCK:$key$nick');
-      _myFloats[_idOf(d)] = key;
+      _myFloats[id] = key;
       await Future.delayed(const Duration(milliseconds: 250));
     }
     await _saveMyFloats();
@@ -1580,7 +1590,17 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
       await _keepOnly(guess);      // 맞으면 그 8개만 남기고
       _startSortWizard();          // 바로 정렬로
     } else {
-      _startIdentify(n);           // 아니면 하나씩 찾기
+      // 확인용으로 켰던 불을 끄고 하나씩 찾기로 넘어간다
+      await _sendCommandToAll('OFF');
+      for (final d in _connectedFloats.values) {
+        d.isOn = false;
+      }
+      setState(() {
+        for (int i = 0; i < _floatPowerStates.length; i++) {
+          _floatPowerStates[i] = false;
+        }
+      });
+      _startIdentify(n);
     }
   }
 
@@ -2851,21 +2871,19 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
     );
     if (ok != true) return;
 
-    // 알림·타이머 정리 후 연결을 끊고 종료
+    // 알림·타이머부터 즉시 정리 (종료가 늦어져도 소리가 안 나게)
     _pickTimer?.cancel();
     _blinkTimer?.cancel();
+    _notifySub?.cancel();
     _stopAutoScan();
-    _notifySub?.cancel();          // 입질 알림 수신 중단
+    setState(() => _bleStatus = '종료 중...');
+
+    // 연결 해제는 기다리지 않는다 (기기에 따라 오래 걸려 종료가 막힘)
     for (final d in _connectedFloats.values) {
-      try {
-        await _central.disconnect(d.peripheral);
-      } catch (_) {}
-      await Future.delayed(const Duration(milliseconds: 200));
+      _central.disconnect(d.peripheral).catchError((_) {});
     }
-    await SystemNavigator.pop();
-    // 일부 기기는 위 호출로 화면이 남아 있어 프로세스를 확실히 종료한다
     await Future.delayed(const Duration(milliseconds: 300));
-    exit(0);
+    exit(0);   // 화면까지 확실히 닫는다
   }
 
   // 정렬 마법사 오버레이 — 깜빡이는 찌의 실제 자리 번호를 탭/음성으로 지정
