@@ -1503,13 +1503,26 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
         },
         onConnectAll: (peripherals) async {
           Navigator.pop(ctx);
-          setState(() => _bleStatus = '${peripherals.length}개 일괄 연결 중...');
-          for (final p in peripherals) {
-            try {
-              await _central.connect(p);
-              await Future.delayed(const Duration(milliseconds: 400));
-            } catch (_) {}
+          final total = peripherals.length;
+          setState(() => _bleStatus = '$total개 일괄 연결 중...');
+          int ok = 0;
+          for (int i = 0; i < peripherals.length; i++) {
+            final p = peripherals[i];
+            setState(() => _bleStatus = '연결 중 ${i + 1}/$total...');
+            // 연결 실패 시 2회까지 재시도 (BLE는 연속 연결 시 자주 실패함)
+            for (int attempt = 0; attempt < 3; attempt++) {
+              try {
+                await _central.connect(p);
+                ok++;
+                break;
+              } catch (_) {
+                await Future.delayed(const Duration(milliseconds: 600));
+              }
+            }
+            // 다음 연결 전 충분히 대기 (Android BLE 안정화)
+            await Future.delayed(const Duration(milliseconds: 900));
           }
+          setState(() => _bleStatus = '$ok/$total개 연결됨');
         },
         connectedUUIDs: _connectedFloats.values
             .map((d) => d.peripheral.uuid)
@@ -2217,6 +2230,7 @@ class _PairingScannerWidgetState extends State<_PairingScannerWidget>
     with SingleTickerProviderStateMixin {
   late AnimationController _radarController;
   final List<DiscoveredEventArgs> _foundDevices = [];
+  Timer? _rescanTimer;
   StreamSubscription? _scanSub;
 
   @override
@@ -2253,11 +2267,21 @@ class _PairingScannerWidgetState extends State<_PairingScannerWidget>
     });
 
     widget.central.startDiscovery();
+
+    // 일부 안드로이드는 스캔이 조용히 멈춤 → 3초마다 재시작해 놓친 찌를 계속 수집
+    _rescanTimer?.cancel();
+    _rescanTimer = Timer.periodic(const Duration(seconds: 3), (_) async {
+      try {
+        await widget.central.stopDiscovery();
+        await widget.central.startDiscovery();
+      } catch (_) {}
+    });
   }
 
   @override
   void dispose() {
     _radarController.dispose();
+    _rescanTimer?.cancel();
     _scanSub?.cancel();
     widget.central.stopDiscovery();
     super.dispose();
