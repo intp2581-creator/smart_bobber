@@ -113,6 +113,10 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
   final Map<String, String> _myFloats = {};   // 이름 → key
   String _ownerKey = '';                       // 내 소유자 키(기기 공통)
   String _ownerNick = '';                      // 주인 닉네임 — 습득자가 볼 이름
+
+  // 찌 고르기(찌함에서 꺼내는 중) 상태
+  bool _picking = false;
+  Timer? _pickTimer;
   // 스캔 중 확인한 UUID → 광고 이름 (연결 후 이름 참조용). 앱 재시작해도 유지
   final Map<String, String> _discoveredNames = {};
 
@@ -638,11 +642,22 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
 
   // ── 찌 정렬 마법사 (A방식) ──────────────────────────
   // 시작: 연결된 찌를 하나씩 깜빡 → 사용자가 실제 물 위 자리 번호를 말/탭 → 그 자리로 이동
-  void _startSortWizard() {
+  void _startSortWizard() async {
     if (_connectedFloats.isEmpty) {
       setState(() => _bleStatus = '⚠ 연결된 찌가 없어요 (먼저 페어링)');
       return;
     }
+    // 정렬하려면 찌가 보여야 하므로 자동으로 전부 켠다 (대편성 중엔 꺼져 있음)
+    await _sendCommandToAll('ON');
+    setState(() {
+      for (int i = 0; i < _floatPowerStates.length; i++) {
+        _floatPowerStates[i] = true;
+      }
+    });
+    for (final d in _connectedFloats.values) {
+      d.isOn = true;
+    }
+
     final entries = _connectedFloats.entries.toList()
       ..sort((a, b) => a.key.compareTo(b.key));
     _sortQueue = entries.map((e) => e.value).toList();
@@ -704,6 +719,18 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
     _blinkTimer?.cancel();
     _blinkTimer = null;
     _saveSlotAssignments();
+
+    // 정렬이 끝나면 불을 끈다 (낮낚시 중 배터리 절약 — 밤엔 ALL ON으로 켜기)
+    _sendCommandToAll('OFF');
+    for (final d in _connectedFloats.values) {
+      d.isOn = false;
+    }
+    setState(() {
+      for (int i = 0; i < _floatPowerStates.length; i++) {
+        _floatPowerStates[i] = false;
+      }
+      _bleStatus = '✓ 정렬 완료 (${newFloats.length}대) — 어두워지면 ALL ON';
+    });
   }
 
   void _cancelSort() {
@@ -1137,64 +1164,197 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
     }
   }
 
+  // 오늘 쓸 찌 고르기 — 고른 개수만큼 찌함에서 번호순으로 반짝이게 한다.
+  // 반짝이는 것만 꺼내 던지고 [선택 완료]를 누르면 불이 꺼지고 그 개수만 화면에 남는다.
   void _showCountSelector() {
     showModalBottomSheet(
       context: context,
-      backgroundColor: Colors.black.withValues(alpha: 0.85),
+      backgroundColor: Colors.black.withValues(alpha: 0.92),
+      isScrollControlled: true,
       shape: const RoundedRectangleBorder(
           borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setModal) => Container(
-          padding: const EdgeInsets.all(20),
-          height: 280,
+          padding: const EdgeInsets.fromLTRB(20, 20, 20, 28),
           child: Column(
+            mainAxisSize: MainAxisSize.min,
             children: [
-              const Text('SELECT COUNT',
+              const Text('오늘 몇 대 쓰세요?',
                   style: TextStyle(
-                      fontSize: 16,
+                      fontSize: 20,
                       fontWeight: FontWeight.bold,
-                      letterSpacing: 1.5,
                       color: Colors.white)),
-              const SizedBox(height: 20),
-              Expanded(
-                child: GridView.builder(
-                  itemCount: 20,
-                  gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                      crossAxisCount: 10, mainAxisSpacing: 8, crossAxisSpacing: 8),
-                  itemBuilder: (ctx, i) {
-                    final n = i + 1;
-                    final sel = _floatCount == n;
-                    return InkWell(
-                      onTap: () {
-                        setModal(() => _floatCount = n);
-                        setState(() => _floatCount = n);
-                        _saveSettings();
-                        Navigator.pop(ctx);
-                      },
-                      child: Container(
-                        alignment: Alignment.center,
-                        decoration: BoxDecoration(
-                          color: sel ? Colors.blueAccent : Colors.white.withValues(alpha: 0.1),
-                          borderRadius: BorderRadius.circular(8),
-                          border: Border.all(
-                              color: sel ? Colors.blueAccent : Colors.transparent, width: 1.5),
-                        ),
-                        child: Text('$n',
-                            style: TextStyle(
-                                color: sel ? Colors.white : Colors.white70,
-                                fontWeight: FontWeight.bold,
-                                fontSize: 13)),
+              const SizedBox(height: 6),
+              const Text('숫자를 누르면 찌함에서 그만큼 반짝입니다',
+                  style: TextStyle(fontSize: 13, color: Colors.white54)),
+              const SizedBox(height: 18),
+              GridView.builder(
+                shrinkWrap: true,
+                physics: const NeverScrollableScrollPhysics(),
+                itemCount: 20,
+                gridDelegate:
+                    const SliverGridDelegateWithFixedCrossAxisCount(
+                        crossAxisCount: 5,
+                        mainAxisSpacing: 10,
+                        crossAxisSpacing: 10,
+                        childAspectRatio: 1.4),
+                itemBuilder: (ctx, i) {
+                  final n = i + 1;
+                  final sel = _floatCount == n;
+                  return InkWell(
+                    onTap: () async {
+                      setModal(() => _floatCount = n);
+                      setState(() => _floatCount = n);
+                      _saveSettings();
+                      await _blinkPickList(n);   // 1~n번 찌 반짝 시작
+                      setModal(() {});
+                    },
+                    child: Container(
+                      alignment: Alignment.center,
+                      decoration: BoxDecoration(
+                        color: sel
+                            ? Colors.blueAccent
+                            : Colors.white.withValues(alpha: 0.1),
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(
+                            color: sel ? Colors.blueAccent : Colors.transparent,
+                            width: 2),
                       ),
-                    );
-                  },
-                ),
+                      child: Text('$n',
+                          style: TextStyle(
+                              color: sel ? Colors.white : Colors.white70,
+                              fontWeight: FontWeight.bold,
+                              fontSize: 22)),
+                    ),
+                  );
+                },
               ),
+              const SizedBox(height: 18),
+              if (_picking)
+                Column(
+                  children: [
+                    Text('찌함에서 반짝이는 $_floatCount개를 꺼내 던지세요',
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(
+                            fontSize: 14,
+                            color: Colors.amberAccent,
+                            fontWeight: FontWeight.bold)),
+                    const SizedBox(height: 12),
+                    SizedBox(
+                      width: double.infinity,
+                      child: ElevatedButton.icon(
+                        onPressed: () async {
+                          Navigator.pop(ctx);
+                          await _finishPick();
+                        },
+                        icon: const Icon(Icons.check, color: Colors.white, size: 26),
+                        label: const Text('선택 완료',
+                            style: TextStyle(
+                                color: Colors.white,
+                                fontSize: 18,
+                                fontWeight: FontWeight.bold)),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.green,
+                          padding: const EdgeInsets.symmetric(vertical: 16),
+                          shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(12)),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
             ],
           ),
         ),
       ),
     );
   }
+
+  // 1~count번 찌를 계속 반짝이게 (찌함에서 골라 꺼내는 동안)
+  Future<void> _blinkPickList(int count) async {
+    _pickTimer?.cancel();
+    setState(() => _picking = true);
+    Future<void> pulse() async {
+      for (int slot = 1; slot <= count; slot++) {
+        await _sendCommandToSlot(slot, 'BLINK');
+      }
+    }
+    await pulse();
+    // BLINK는 약 3초 후 멈추므로 주기적으로 다시 보내 계속 반짝이게 한다
+    _pickTimer = Timer.periodic(const Duration(seconds: 3), (_) => pulse());
+  }
+
+  // 선택 완료 — 반짝임 멈추고 LED 끄기 (대편성 동안 배터리 절약)
+  Future<void> _finishPick() async {
+    _pickTimer?.cancel();
+    _pickTimer = null;
+    setState(() => _picking = false);
+    await _sendCommandToAll('OFF');
+    setState(() {
+      for (int i = 0; i < _floatPowerStates.length; i++) {
+        _floatPowerStates[i] = false;
+      }
+      _bleStatus = '$_floatCount대 준비됨 — 대편성 후 정렬하세요';
+    });
+  }
+
+
+  // 설정 — 자주 안 쓰는 항목 모음 (알림음·모드·내 찌)
+  void _showSettingsSheet() {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.black.withValues(alpha: 0.94),
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (ctx) => Container(
+        padding: const EdgeInsets.fromLTRB(20, 20, 20, 28),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text('설정',
+                style: TextStyle(
+                    fontSize: 20,
+                    fontWeight: FontWeight.bold,
+                    color: Colors.white)),
+            const SizedBox(height: 16),
+            _settingsTile(ctx, Icons.music_note, '알림음',
+                _selectedSound.replaceAll('sound_', '소리 '), _showSoundSelector),
+            _settingsTile(ctx, Icons.tune, '입질 모드',
+                _variColor ? '변색 켜짐' : '변색 꺼짐', _showModeSelector),
+            _settingsTile(
+                ctx,
+                _myFloats.isEmpty ? Icons.lock_open : Icons.lock,
+                '내 찌 (도난방지)',
+                _myFloats.isEmpty ? '미등록' : '${_myFloats.length}개 잠금',
+                _showMyFloatsSheet),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _settingsTile(BuildContext ctx, IconData icon, String title,
+      String value, VoidCallback onTap) {
+    return ListTile(
+      leading: Icon(icon, color: Colors.blueAccent, size: 26),
+      title: Text(title,
+          style: const TextStyle(
+              color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600)),
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(value,
+              style: const TextStyle(color: Colors.white38, fontSize: 13)),
+          const Icon(Icons.chevron_right, color: Colors.white24),
+        ],
+      ),
+      onTap: () {
+        Navigator.pop(ctx);
+        onTap();
+      },
+    );
+  }
+
 
   // 내 찌 등록·잠금 관리 화면 (도난·분실 방지)
   void _showMyFloatsSheet() {
@@ -1705,6 +1865,17 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
                               child: const Text('ALL OFF', style: TextStyle(color: Colors.white, fontSize: 11)),
                             ),
                           ),
+                          const SizedBox(width: 4),
+                          // 자주 안 쓰는 항목(모드·내 찌)은 여기로 모음
+                          IconButton(
+                            onPressed: _showSettingsSheet,
+                            icon: const Icon(Icons.settings,
+                                color: Colors.white70, size: 22),
+                            padding: EdgeInsets.zero,
+                            constraints:
+                                const BoxConstraints(minWidth: 30, minHeight: 28),
+                            tooltip: '설정',
+                          ),
                         ],
                       ),
                     ],
@@ -1811,6 +1982,7 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
                     mainAxisAlignment: MainAxisAlignment.end,
                     children: [
                       // 밝기 & 감도 슬라이더
+                      // 밝기 & 감도 슬라이더
                       Padding(
                         padding: const EdgeInsets.symmetric(horizontal: 16),
                         child: Row(
@@ -1860,26 +2032,21 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
                                 icon: Icons.grid_view,
                                 label: '찌선택',
                                 onTap: _showCountSelector),
+                            // 찌함에서 꺼내는 중에만 나타남 — 누르면 불 끄고 대편성 시작
+                            if (_picking)
+                              _BottomMenu(
+                                  icon: Icons.check_circle,
+                                  label: '선택완료',
+                                  color: Colors.greenAccent,
+                                  onTap: _finishPick),
                             _BottomMenu(
                                 icon: Icons.palette_outlined,
                                 label: '색상',
                                 onTap: _showColorSelector),
                             _BottomMenu(
-                                icon: Icons.music_note,
-                                label: '알림음',
-                                onTap: _showSoundSelector),
-                            _BottomMenu(
-                                icon: Icons.tune,
-                                label: '모드',
-                                onTap: _showModeSelector),
-                            _BottomMenu(
                                 icon: Icons.sort,
                                 label: '정렬',
                                 onTap: _startSortWizard),
-                            _BottomMenu(
-                                icon: _myFloats.isEmpty ? Icons.lock_open : Icons.lock,
-                                label: '내 찌',
-                                onTap: _showMyFloatsSheet),
                             InkWell(
                               onTap: _toggleNotifyMode,
                               borderRadius: BorderRadius.circular(10),
@@ -2259,10 +2426,13 @@ class _BottomMenu extends StatelessWidget {
   final IconData icon;
   final String label;
   final VoidCallback? onTap;
-  const _BottomMenu({required this.icon, required this.label, this.onTap});
+  final Color? color;            // 강조가 필요한 버튼(선택완료 등)
+  const _BottomMenu(
+      {required this.icon, required this.label, this.onTap, this.color});
 
   @override
   Widget build(BuildContext context) {
+    final c = color ?? Colors.white70;
     return InkWell(
       onTap: onTap,
       borderRadius: BorderRadius.circular(10),
@@ -2272,11 +2442,14 @@ class _BottomMenu extends StatelessWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(icon, color: Colors.white70, size: 28),
+            Icon(icon, color: c, size: 28),
             const SizedBox(height: 5),
             Text(label,
-                style:
-                    const TextStyle(color: Colors.white70, fontSize: 12)),
+                style: TextStyle(
+                    color: c,
+                    fontSize: 12,
+                    fontWeight:
+                        color != null ? FontWeight.bold : FontWeight.normal)),
           ],
         ),
       ),
