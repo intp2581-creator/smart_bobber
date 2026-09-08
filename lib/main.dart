@@ -3134,9 +3134,14 @@ class _PairingScannerWidgetState extends State<_PairingScannerWidget>
 
   @override
   Widget build(BuildContext context) {
+    // 화면이 낮으면(일반폰 가로 등) 시트를 최대한 높이 올려 목록이 보이게 한다
+    final screenH = MediaQuery.of(context).size.height;
+    final sheetH = (screenH * 0.9).clamp(260.0, 560.0);
+    final compact = screenH < 620;   // 낮은 화면에서는 레이더를 줄인다
+
     return Container(
-      padding: const EdgeInsets.all(20),
-      height: 500,
+      padding: EdgeInsets.fromLTRB(20, compact ? 12 : 20, 20, 12),
+      height: sheetH,
       child: Column(
         children: [
           const Text('BLUETOOTH PAIRING',
@@ -3146,26 +3151,31 @@ class _PairingScannerWidgetState extends State<_PairingScannerWidget>
                   letterSpacing: 1.5,
                   color: Colors.white)),
           const SizedBox(height: 5),
-          Text('주변의 KREFT 전자찌를 탐색 중입니다...',
+          Text(
+              _foundDevices.isEmpty
+                  ? '주변의 KREFT 전자찌를 탐색 중입니다...'
+                  : '찌 ${_foundDevices.length}개 찾음 — 계속 탐색 중',
               style: TextStyle(
                   fontSize: 12,
-                  color: Colors.white.withValues(alpha: 0.5))),
-          const SizedBox(height: 30),
-          // 레이더 애니메이션
+                  color: _foundDevices.isEmpty
+                      ? Colors.white.withValues(alpha: 0.5)
+                      : Colors.greenAccent)),
+          SizedBox(height: compact ? 10 : 30),
+          // 레이더 애니메이션 (좁은 화면에서는 작게)
           Stack(
             alignment: Alignment.center,
             children: [
               Container(
-                  width: 120,
-                  height: 120,
+                  width: compact ? 64 : 120,
+                  height: compact ? 64 : 120,
                   decoration: BoxDecoration(
                       shape: BoxShape.circle,
                       border: Border.all(
                           color: Colors.blueAccent.withValues(alpha: 0.3),
                           width: 1))),
               Container(
-                  width: 80,
-                  height: 80,
+                  width: compact ? 42 : 80,
+                  height: compact ? 42 : 80,
                   decoration: BoxDecoration(
                       shape: BoxShape.circle,
                       border: Border.all(
@@ -3174,8 +3184,8 @@ class _PairingScannerWidgetState extends State<_PairingScannerWidget>
               RotationTransition(
                 turns: _radarController,
                 child: Container(
-                  width: 120,
-                  height: 120,
+                  width: compact ? 64 : 120,
+                  height: compact ? 64 : 120,
                   decoration: BoxDecoration(
                     shape: BoxShape.circle,
                     gradient: SweepGradient(colors: [
@@ -3185,11 +3195,11 @@ class _PairingScannerWidgetState extends State<_PairingScannerWidget>
                   ),
                 ),
               ),
-              const Icon(Icons.bluetooth_searching,
-                  color: Colors.blueAccent, size: 40),
+              Icon(Icons.bluetooth_searching,
+                  color: Colors.blueAccent, size: compact ? 24 : 40),
             ],
           ),
-          const SizedBox(height: 16),
+          SizedBox(height: compact ? 8 : 16),
           // 모두 연결 버튼 — 검색된 미연결 찌를 한 번에
           Builder(builder: (ctx) {
             final unconnected = _foundDevices
