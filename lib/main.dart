@@ -620,18 +620,25 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
   // 연결된 찌 전체 잠금 / 해제
   Future<void> _lockAll() async {
     if (!await _ensureOwnerNick()) return;   // 닉네임 최초 1회 입력
+    final key = await _ensureOwnerKey();
+    final nick = _ownerNick.isEmpty ? '' : ':$_ownerNick';
+
+    // 반복 도중 목록이 바뀌지 않도록 먼저 복사해 둔다
+    final targets = _connectedFloats.values.toList();
     int done = 0;
-    for (final d in _connectedFloats.values) {
-      if (!_myFloats.containsKey(_idOf(d))) {
-        await _lockFloat(d);
-        done++;
-        await Future.delayed(const Duration(milliseconds: 200));
-      }
+    for (final d in targets) {
+      if (_myFloats.containsKey(_idOf(d))) continue;
+      await _sendCommandToDevice(d, 'LOCK:$key$nick');
+      _myFloats[_idOf(d)] = key;      // 저장은 아래에서 한 번에
+      done++;
+      await Future.delayed(const Duration(milliseconds: 250));
     }
-    // 등록된 찌 개수에 맞춰 화면도 정리 (등록 안내 화면이 닫힌다)
+    await _saveMyFloats();
+
+    if (!mounted) return;
     setState(() {
       _floatCount = _connectedFloats.isEmpty ? 1 : _connectedFloats.length;
-      _bleStatus = '내 찌 ${_myFloats.length}개 등록·잠금됨';
+      _bleStatus = '내 찌 ${_myFloats.length}개 등록 완료';
     });
     await _saveSettings();
     if (done > 0 && mounted) {
@@ -2119,7 +2126,12 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
         serviceUUID: _serviceUUID,
         onConnect: (peripheral) async {
           Navigator.pop(ctx);
-          await _central.connect(peripheral);
+          try {
+            await _central.connect(peripheral);
+          } catch (_) {}
+          if (mounted) {
+            setState(() => _bleStatus = '${_connectedFloats.length}개 연결됨');
+          }
         },
         onConnectAll: (peripherals) async {
           Navigator.pop(ctx);
@@ -2143,6 +2155,11 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
             await Future.delayed(const Duration(milliseconds: 900));
           }
           setState(() => _bleStatus = '$ok/$total개 연결됨');
+          // 아직 등록 전이면 곧바로 등록까지 진행 (등록을 두 번 하지 않게)
+          if (_myFloats.isEmpty && _connectedFloats.isNotEmpty) {
+            await Future.delayed(const Duration(milliseconds: 400));
+            if (mounted) await _lockAll();
+          }
         },
         connectedUUIDs: _connectedFloats.values
             .map((d) => d.peripheral.uuid)
@@ -2591,26 +2608,26 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
       child: Container(
         color: Colors.black.withValues(alpha: 0.92),
         child: SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.all(28),
+          child: SingleChildScrollView(   // 작은 화면(폴더 접힘)에서도 넘치지 않게
+            padding: const EdgeInsets.all(24),
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
                 const Icon(Icons.phonelink_ring,
-                    color: Colors.blueAccent, size: 64),
-                const SizedBox(height: 20),
+                    color: Colors.blueAccent, size: 52),
+                const SizedBox(height: 16),
                 const Text('KREFT 찌를 등록해 주세요',
                     textAlign: TextAlign.center,
                     style: TextStyle(
                         color: Colors.white,
-                        fontSize: 22,
+                        fontSize: 20,
                         fontWeight: FontWeight.bold)),
-                const SizedBox(height: 12),
+                const SizedBox(height: 10),
                 const Text(
                     '가지고 계신 찌를 모두 켜서 옆에 두고\n아래 버튼을 눌러주세요.\n한 번만 등록하면 다음부터 자동으로 연결됩니다.',
                     textAlign: TextAlign.center,
-                    style: TextStyle(color: Colors.white70, fontSize: 14, height: 1.6)),
-                const SizedBox(height: 28),
+                    style: TextStyle(color: Colors.white70, fontSize: 13, height: 1.5)),
+                const SizedBox(height: 20),
                 if (connected > 0)
                   Text('찌 $connected개 찾음',
                       style: const TextStyle(
