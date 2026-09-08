@@ -661,8 +661,11 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
         for (final e in _connectedFloats.entries) {
           _floatPowerStates[e.key - 1] = true;
         }
-        _startupAsked = true;   // 등록 직후엔 편성 질문 생략
       });
+      // 집에서 미리 세팅할 수도, 물가에서 할 수도 있으니 물어보되 "나중에"를 둔다
+      _startupAsked = false;
+      await Future.delayed(const Duration(milliseconds: 800));
+      if (mounted) await _askTodayCount();
     }
   }
 
@@ -1354,6 +1357,10 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
             children: [
               Text('등록된 찌 $total개 중에서 고르세요',
                   style: const TextStyle(color: Colors.white54, fontSize: 13)),
+              const SizedBox(height: 4),
+              const Text('낚시터에서 하실 거면 [나중에]를 누르세요',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: Colors.white30, fontSize: 12)),
               const SizedBox(height: 14),
               GridView.builder(
                 shrinkWrap: true,
@@ -1387,7 +1394,10 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
           TextButton(
               onPressed: () => Navigator.pop(d),
               child: const Text('나중에',
-                  style: TextStyle(color: Colors.white54))),
+                  style: TextStyle(
+                      color: Colors.amberAccent,
+                      fontSize: 16,
+                      fontWeight: FontWeight.bold))),
         ],
       ),
     );
@@ -2211,28 +2221,34 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
                         children: [
                           const Text('SMART CONTROL',
                               style: TextStyle(
-                                  fontSize: 16,
+                                  fontSize: 17,
                                   fontWeight: FontWeight.bold,
                                   letterSpacing: 1.5,
-                                  color: Colors.white,
-                                  shadows: [Shadow(color: Colors.black54, offset: Offset(1, 1), blurRadius: 3)])),
+                                  color: Color(0xFFE8C56A),   // 금색
+                                  shadows: [Shadow(color: Colors.black, offset: Offset(1, 1), blurRadius: 4)])),
                           Row(
                             children: [
                               Icon(
                                 _connectedFloats.isEmpty ? Icons.bluetooth_disabled : Icons.bluetooth_connected,
-                                color: _connectedFloats.isEmpty ? Colors.white38 : Colors.blueAccent,
-                                size: 11,
+                                color: _connectedFloats.isEmpty ? Colors.white54 : Colors.white,
+                                size: 14,
                               ),
-                              const SizedBox(width: 3),
+                              const SizedBox(width: 4),
                               ConstrainedBox(
                                 constraints: const BoxConstraints(maxWidth: 260),
                                 child: Text(_bleStatus,
                                     maxLines: 1,
                                     overflow: TextOverflow.ellipsis,
-                                    style: TextStyle(
-                                        fontSize: 10,
-                                        color: Colors.blueAccent.withValues(alpha: 0.8),
-                                        fontWeight: FontWeight.bold)),
+                                    style: const TextStyle(
+                                        fontSize: 13,
+                                        color: Colors.white,
+                                        fontWeight: FontWeight.bold,
+                                        shadows: [
+                                          Shadow(
+                                              color: Colors.black,
+                                              offset: Offset(1, 1),
+                                              blurRadius: 4)
+                                        ])),
                               ),
                             ],
                           ),
