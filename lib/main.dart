@@ -113,7 +113,7 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
   final Map<String, String> _myFloats = {};   // 이름 → key
   String _ownerKey = '';                       // 내 소유자 키(기기 공통)
   String _ownerNick = '';                      // 주인 닉네임 — 습득자가 볼 이름
-  // 스캔 중 확인한 UUID → 광고 이름 (연결 후 이름 참조용)
+  // 스캔 중 확인한 UUID → 광고 이름 (연결 후 이름 참조용). 앱 재시작해도 유지
   final Map<String, String> _discoveredNames = {};
 
   StreamSubscription? _bleStateSub;
@@ -184,6 +184,16 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
       // 내 찌 등록 목록 & 소유자 키·닉네임 복원
       _ownerKey = prefs.getString('ownerKey') ?? '';
       _ownerNick = prefs.getString('ownerNick') ?? '';
+
+      // 찌 이름 기억 복원 (앱 재시작 후에도 어느 찌인지 알 수 있게)
+      final nameJson = prefs.getString('deviceNames');
+      if (nameJson != null) {
+        try {
+          final map = jsonDecode(nameJson) as Map<String, dynamic>;
+          _discoveredNames.clear();
+          map.forEach((k, v) => _discoveredNames[k] = v as String);
+        } catch (_) {}
+      }
       final myJson = prefs.getString('myFloats');
       if (myJson != null) {
         try {
@@ -210,6 +220,14 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
   Future<void> _saveMyFloats() async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString('myFloats', jsonEncode(_myFloats));
+  }
+
+  // 발견한 찌 이름 기억 (앱을 껐다 켜도 어느 찌인지 알 수 있게)
+  Future<void> _rememberName(String uuid, String name) async {
+    if (name.isEmpty || _discoveredNames[uuid] == name) return;
+    _discoveredNames[uuid] = name;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('deviceNames', jsonEncode(_discoveredNames));
   }
 
   Future<void> _saveSettings() async {
@@ -308,7 +326,7 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
     _autoScanSub = _central.discovered.listen((event) async {
       final uuid = event.peripheral.uuid.toString();
       final advName = event.advertisement.name;
-      if (advName != null && advName.isNotEmpty) _discoveredNames[uuid] = advName;
+      if (advName != null && advName.isNotEmpty) _rememberName(uuid, advName);
       final already = _connectedFloats.values
           .any((d) => d.peripheral.uuid == event.peripheral.uuid);
       if (known.contains(uuid) && !already) {
@@ -370,32 +388,35 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
       // Android BLE 안정화 대기
       await Future.delayed(const Duration(milliseconds: 1000));
 
-      // GATT 탐색 (진단용 플래그 수집)
+      // GATT 탐색 (진단용 플래그 수집) — 실패 시 2회까지 재시도
       bool svcFound = false;
       bool notifyOk = false;
       bool cmdBound = false;
-      final services = await _central.discoverGATT(peripheral);
-      for (final svc in services) {
-        if (svc.uuid == _serviceUUID) {
-          svcFound = true;
-          for (final chr in svc.characteristics) {
-            if (chr.uuid == _biteCharUUID) {
-              await _central.setCharacteristicNotifyState(
-                  peripheral, chr, state: true);
-              notifyOk = true;
-            }
-            if (chr.uuid == _commandCharUUID) {
-              device.commandChar = chr;
-              cmdBound = true;
+      for (int attempt = 0; attempt < 3; attempt++) {
+        final services = await _central.discoverGATT(peripheral);
+        for (final svc in services) {
+          if (svc.uuid == _serviceUUID) {
+            svcFound = true;
+            for (final chr in svc.characteristics) {
+              if (chr.uuid == _biteCharUUID) {
+                await _central.setCharacteristicNotifyState(
+                    peripheral, chr, state: true);
+                notifyOk = true;
+              }
+              if (chr.uuid == _commandCharUUID) {
+                device.commandChar = chr;
+                cmdBound = true;
+              }
             }
           }
         }
+        if (svcFound && notifyOk && cmdBound) break;
+        await Future.delayed(const Duration(milliseconds: 700));
       }
 
       // 진단: 어디서 끊겼는지 화면에 표시
       if (!svcFound) {
-        setState(() => _bleStatus =
-            '⚠ GATT 서비스 미발견 (특성 ${services.length}개 svc) — 찌 재광고 필요');
+        setState(() => _bleStatus = '⚠ GATT 서비스 미발견 — 찌 재시작 필요');
       } else if (!notifyOk || !cmdBound) {
         setState(() => _bleStatus =
             '⚠ 특성 누락 notify=$notifyOk cmd=$cmdBound');
@@ -434,9 +455,10 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
     final p = device.peripheral;
 
     final cmds = <String>[
-      // 잠긴 찌는 인증을 먼저 통과해야 명령을 받음 (내 찌로 등록된 경우)
-      if (device.name.isNotEmpty && _myFloats.containsKey(device.name))
-        'AUTH:${_myFloats[device.name]}',
+      // 잠긴 찌는 인증을 먼저 통과해야 명령을 받음.
+      // 소유자 키는 폰당 하나뿐이므로 찌 이름을 몰라도(앱 재시작 등) 항상 보낸다.
+      // 잠기지 않은 찌는 AUTH를 받아도 그대로 통과하므로 안전.
+      if (_ownerKey.isNotEmpty) 'AUTH:$_ownerKey',
       device.isOn ? 'ON' : 'OFF',
       'COLOR:${_preset.r},${_preset.g},${_preset.b}',
       'BRIGHTNESS:${_brightnessValue.toStringAsFixed(2)}',
@@ -1589,7 +1611,7 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
             .map((d) => d.peripheral.uuid)
             .toSet(),
         myFloatNames: _myFloats.keys.toSet(),
-        onDiscovered: (uuid, name) => _discoveredNames[uuid] = name,
+        onDiscovered: (uuid, name) => _rememberName(uuid, name),
       ),
     );
   }
