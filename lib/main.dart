@@ -1203,11 +1203,21 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
                   final sel = _floatCount == n;
                   return InkWell(
                     onTap: () async {
-                      setModal(() => _floatCount = n);
-                      setState(() => _floatCount = n);
-                      _saveSettings();
-                      await _blinkPickList(n);   // 1~n번 찌 반짝 시작
-                      setModal(() {});
+                      final before = _floatCount;
+                      Navigator.pop(ctx);
+                      if (n > before) {
+                        // 대를 더 펴는 경우 — 늘어난 번호만 반짝
+                        setState(() => _floatCount = n);
+                        _saveSettings();
+                        await _blinkPickList(n, from: before + 1);
+                      } else if (n < before) {
+                        // 대를 걷는 경우 — 어느 찌를 뺄지 직접 고르게 한다
+                        await _showRemovePicker(before, before - n);
+                      } else {
+                        setState(() => _floatCount = n);
+                        _saveSettings();
+                        await _blinkPickList(n);
+                      }
                     },
                     child: Container(
                       alignment: Alignment.center,
@@ -1229,40 +1239,10 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
                   );
                 },
               ),
-              const SizedBox(height: 18),
-              if (_picking)
-                Column(
-                  children: [
-                    Text('찌함에서 반짝이는 $_floatCount개를 꺼내 던지세요',
-                        textAlign: TextAlign.center,
-                        style: const TextStyle(
-                            fontSize: 14,
-                            color: Colors.amberAccent,
-                            fontWeight: FontWeight.bold)),
-                    const SizedBox(height: 12),
-                    SizedBox(
-                      width: double.infinity,
-                      child: ElevatedButton.icon(
-                        onPressed: () async {
-                          Navigator.pop(ctx);
-                          await _finishPick();
-                        },
-                        icon: const Icon(Icons.check, color: Colors.white, size: 26),
-                        label: const Text('선택 완료',
-                            style: TextStyle(
-                                color: Colors.white,
-                                fontSize: 18,
-                                fontWeight: FontWeight.bold)),
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: Colors.green,
-                          padding: const EdgeInsets.symmetric(vertical: 16),
-                          shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(12)),
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
+              const SizedBox(height: 14),
+              const Text('꺼낸 뒤 아래 [선택완료]를 누르세요',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(fontSize: 13, color: Colors.white38)),
             ],
           ),
         ),
@@ -1271,17 +1251,156 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
   }
 
   // 1~count번 찌를 계속 반짝이게 (찌함에서 골라 꺼내는 동안)
-  Future<void> _blinkPickList(int count) async {
+  // from~count번 찌를 계속 반짝이게 (찌함에서 골라 꺼내는 동안)
+  // 대를 더 펼 때는 from을 지정해 새로 추가되는 번호만 반짝이게 한다.
+  Future<void> _blinkPickList(int count, {int from = 1}) async {
     _pickTimer?.cancel();
-    setState(() => _picking = true);
+    final n = count - from + 1;
+    setState(() {
+      _picking = true;
+      _bleStatus = from > 1
+          ? '✨ 추가된 $n개를 꺼내세요 — 다 꺼내면 [선택완료]'
+          : '✨ 반짝이는 $n개를 꺼내세요 — 다 꺼내면 [선택완료]';
+    });
     Future<void> pulse() async {
-      for (int slot = 1; slot <= count; slot++) {
+      for (int slot = from; slot <= count; slot++) {
         await _sendCommandToSlot(slot, 'BLINK');
       }
     }
     await pulse();
     // BLINK는 약 3초 후 멈추므로 주기적으로 다시 보내 계속 반짝이게 한다
     _pickTimer = Timer.periodic(const Duration(seconds: 3), (_) => pulse());
+  }
+
+  // 걷은 대 고르기 — 중간 번호도 뺄 수 있게 직접 선택시킨다.
+  // 뺀 찌는 불을 끄고, 남은 찌들의 번호를 앞으로 당긴다.
+  Future<void> _showRemovePicker(int total, int removeCount) async {
+    final picked = <int>{};
+    await showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.black.withValues(alpha: 0.94),
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setSheet) => Container(
+          padding: const EdgeInsets.fromLTRB(20, 20, 20, 28),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text('어떤 찌를 걷으셨어요?',
+                  style: TextStyle(
+                      fontSize: 20,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.white)),
+              const SizedBox(height: 6),
+              Text('걷은 대 $removeCount개를 골라주세요 (${picked.length}/$removeCount)',
+                  style: const TextStyle(fontSize: 13, color: Colors.white54)),
+              const SizedBox(height: 16),
+              GridView.builder(
+                shrinkWrap: true,
+                physics: const NeverScrollableScrollPhysics(),
+                itemCount: total,
+                gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                    crossAxisCount: 5,
+                    mainAxisSpacing: 10,
+                    crossAxisSpacing: 10,
+                    childAspectRatio: 1.4),
+                itemBuilder: (ctx, i) {
+                  final slot = i + 1;
+                  final sel = picked.contains(slot);
+                  return InkWell(
+                    onTap: () {
+                      setSheet(() {
+                        if (sel) {
+                          picked.remove(slot);
+                        } else if (picked.length < removeCount) {
+                          picked.add(slot);
+                          _blinkFloat(slot);   // 어느 찌인지 물에서 확인
+                        }
+                      });
+                    },
+                    child: Container(
+                      alignment: Alignment.center,
+                      decoration: BoxDecoration(
+                        color: sel
+                            ? Colors.redAccent
+                            : Colors.white.withValues(alpha: 0.1),
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(
+                            color: sel ? Colors.redAccent : Colors.transparent,
+                            width: 2),
+                      ),
+                      child: Text('$slot',
+                          style: TextStyle(
+                              color: sel ? Colors.white : Colors.white70,
+                              fontWeight: FontWeight.bold,
+                              fontSize: 22)),
+                    ),
+                  );
+                },
+              ),
+              const SizedBox(height: 18),
+              SizedBox(
+                width: double.infinity,
+                child: ElevatedButton.icon(
+                  onPressed: picked.length == removeCount
+                      ? () {
+                          Navigator.pop(ctx);
+                          _removeFloats(picked.toList());
+                        }
+                      : null,
+                  icon: const Icon(Icons.check, color: Colors.white, size: 24),
+                  label: const Text('완료',
+                      style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 17,
+                          fontWeight: FontWeight.bold)),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.green,
+                    disabledBackgroundColor: Colors.white12,
+                    padding: const EdgeInsets.symmetric(vertical: 15),
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12)),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  // 고른 찌들을 목록에서 빼고 뒤 번호를 앞으로 당긴다 (왼쪽부터 순서 유지)
+  Future<void> _removeFloats(List<int> slots) async {
+    for (final s in slots) {
+      await _sendCommandToSlot(s, 'OFF');   // 찌함에 넣을 거라 소등
+    }
+    final remaining = <_FloatDevice>[];
+    final entries = _connectedFloats.entries.toList()
+      ..sort((a, b) => a.key.compareTo(b.key));
+    for (final e in entries) {
+      if (!slots.contains(e.key)) remaining.add(e.value);
+    }
+    setState(() {
+      _connectedFloats.clear();
+      for (int i = 0; i < remaining.length; i++) {
+        final slot = i + 1;
+        _connectedFloats[slot] = remaining[i];
+        _slotAssignments[remaining[i].peripheral.uuid.toString()] = slot;
+        _floatPowerStates[i] = remaining[i].isOn;
+      }
+      for (int i = remaining.length; i < _floatPowerStates.length; i++) {
+        _floatPowerStates[i] = false;
+        _floatBiteStates[i] = false;
+      }
+      _floatCount = _floatCount - slots.length;
+      if (_floatCount < 1) _floatCount = 1;
+      _bleStatus = '${slots.length}대 걷음 — 현재 $_floatCount대';
+    });
+    _saveSlotAssignments();
+    _saveSettings();
   }
 
   // 선택 완료 — 반짝임 멈추고 LED 끄기 (대편성 동안 배터리 절약)
@@ -2028,17 +2147,17 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
                         child: Row(
                           mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                           children: [
-                            _BottomMenu(
-                                icon: Icons.grid_view,
-                                label: '찌선택',
-                                onTap: _showCountSelector),
-                            // 찌함에서 꺼내는 중에만 나타남 — 누르면 불 끄고 대편성 시작
-                            if (_picking)
-                              _BottomMenu(
-                                  icon: Icons.check_circle,
-                                  label: '선택완료',
-                                  color: Colors.greenAccent,
-                                  onTap: _finishPick),
+                            // 찌 고르는 중에는 같은 자리가 [선택완료]로 바뀐다
+                            _picking
+                                ? _BottomMenu(
+                                    icon: Icons.check_circle,
+                                    label: '선택완료',
+                                    color: Colors.greenAccent,
+                                    onTap: _finishPick)
+                                : _BottomMenu(
+                                    icon: Icons.grid_view,
+                                    label: '찌선택',
+                                    onTap: _showCountSelector),
                             _BottomMenu(
                                 icon: Icons.palette_outlined,
                                 label: '색상',
