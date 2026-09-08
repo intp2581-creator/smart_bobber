@@ -1806,22 +1806,6 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
                 '내 찌 등록 · 추가',
                 _myFloats.isEmpty ? '미등록' : '${_myFloats.length}개 등록됨',
                 _showMyFloatsSheet),
-            const Divider(color: Colors.white12, height: 20),
-            ListTile(
-              leading: const Icon(Icons.power_settings_new,
-                  color: Colors.redAccent, size: 26),
-              title: const Text('앱 종료',
-                  style: TextStyle(
-                      color: Colors.redAccent,
-                      fontSize: 16,
-                      fontWeight: FontWeight.w600)),
-              subtitle: const Text('찌는 계속 작동합니다',
-                  style: TextStyle(color: Colors.white38, fontSize: 12)),
-              onTap: () {
-                Navigator.pop(ctx);
-                _confirmExit();
-              },
-            ),
           ],
         ),
       ),
@@ -2413,6 +2397,16 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
                             constraints:
                                 const BoxConstraints(minWidth: 30, minHeight: 28),
                             tooltip: '설정',
+                          ),
+                          // 종료 — 백그라운드에 남아 알림이 울리지 않게 바로 끌 수 있게
+                          IconButton(
+                            onPressed: _confirmExit,
+                            icon: const Icon(Icons.power_settings_new,
+                                color: Colors.redAccent, size: 22),
+                            padding: EdgeInsets.zero,
+                            constraints:
+                                const BoxConstraints(minWidth: 30, minHeight: 28),
+                            tooltip: '앱 종료',
                           ),
                         ],
                       ),
