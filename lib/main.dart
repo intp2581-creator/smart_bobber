@@ -119,6 +119,9 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
   bool _picking = false;
   Timer? _pickTimer;
 
+  // 걷어서 찌함에 넣어둔 찌 — 다시 펼 때 여기서 꺼내 쓴다
+  final List<_FloatDevice> _benchedFloats = [];
+
   // 오늘 편성 확인 흐름
   bool _startupAsked = false;          // 이번 실행에서 "몇 대 편성?" 물었는지
   bool _identifyMode = false;          // 수동으로 물에 있는 찌 찾는 중
@@ -591,6 +594,8 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
       context: context,
       builder: (d) => AlertDialog(
         backgroundColor: const Color(0xFF1A1D23),
+        insetPadding:
+            const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
         title: const Text('닉네임 설정',
             style: TextStyle(color: Colors.white, fontSize: 16)),
         content: SingleChildScrollView(
@@ -599,12 +604,18 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               const Text(
-                  '찌를 잃어버렸을 때 주운 사람이 볼 이름입니다.\n한 번만 입력하면 모든 찌에 적용됩니다.',
+                  '찌를 잃어버렸을 때 주운 사람이 볼 이름입니다.',
                   style: TextStyle(color: Colors.white70, fontSize: 12)),
-              const SizedBox(height: 12),
+              const SizedBox(height: 8),
               TextField(
                 controller: ctrl,
+                autofocus: true,
                 maxLength: 12,
+                buildCounter: (_,
+                        {required currentLength,
+                        required isFocused,
+                        maxLength}) =>
+                    null,
               style: const TextStyle(color: Colors.white),
               decoration: const InputDecoration(
                 hintText: '예: 손맛왕',
@@ -1306,7 +1317,8 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
                       final before = _connectedFloats.length;
                       Navigator.pop(ctx);
                       if (n > before) {
-                        // 대를 더 펴는 경우 — 늘어난 번호만 반짝
+                        // 대를 더 펴는 경우 — 걷어둔 찌를 먼저 되돌리고 늘어난 번호만 반짝
+                        _restoreBenched(n - before);
                         setState(() => _floatCount = n);
                         _saveSettings();
                         await _blinkPickList(n, from: before + 1);
@@ -1679,6 +1691,25 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
     );
   }
 
+  // 걷어뒀던 찌를 다시 대열에 넣는다 (뒤 번호부터 차례로)
+  void _restoreBenched(int count) {
+    if (_benchedFloats.isEmpty || count <= 0) return;
+    setState(() {
+      int slot = _connectedFloats.isEmpty
+          ? 1
+          : (_connectedFloats.keys.reduce((a, b) => a > b ? a : b) + 1);
+      for (int i = 0; i < count && _benchedFloats.isNotEmpty; i++) {
+        if (slot > 20) break;
+        final dev = _benchedFloats.removeAt(0);
+        _connectedFloats[slot] = dev;
+        _slotAssignments[dev.peripheral.uuid.toString()] = slot;
+        _floatPowerStates[slot - 1] = dev.isOn;
+        slot++;
+      }
+    });
+    _saveSlotAssignments();
+  }
+
   // 고른 찌들을 목록에서 빼고 뒤 번호를 앞으로 당긴다 (왼쪽부터 순서 유지)
   Future<void> _removeFloats(List<int> slots) async {
     for (final s in slots) {
@@ -1688,7 +1719,12 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
     final entries = _connectedFloats.entries.toList()
       ..sort((a, b) => a.key.compareTo(b.key));
     for (final e in entries) {
-      if (!slots.contains(e.key)) remaining.add(e.value);
+      if (slots.contains(e.key)) {
+        e.value.isOn = false;
+        _benchedFloats.add(e.value);   // 다시 펼 수 있게 보관해 둔다
+      } else {
+        remaining.add(e.value);
+      }
     }
     setState(() {
       _connectedFloats.clear();
