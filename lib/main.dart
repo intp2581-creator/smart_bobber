@@ -311,9 +311,10 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
         if (slot != null) _triggerBiteAlert(slot);
       } else if (msg.startsWith('BATT:')) {
         // 찌가 보고한 배터리 잔량 — 낮으면 미리 교체 준비할 수 있게 표시
+        // -1 은 찌가 배터리 측정을 지원하지 않는다는 뜻이므로 무시한다
         final pct = int.tryParse(msg.substring(5));
         final slot = _slotOf(args.peripheral);
-        if (pct != null && slot != null) {
+        if (pct != null && pct >= 0 && slot != null) {
           final dev = _connectedFloats[slot];
           if (dev != null) {
             final was = dev.battery;
@@ -688,7 +689,9 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
   }
 
   // 연결된 찌 전체 잠금 / 해제
-  Future<void> _lockAll() async {
+  // 내 찌로 등록 — 기본은 "기억"만 한다.
+  // 도난방지 잠금은 사용자가 따로 켤 때만 건다(잠금은 폰을 바꾸면 풀 수 없으므로).
+  Future<void> _lockAll({bool alsoLock = false}) async {
     if (!await _ensureOwnerNick()) return;   // 닉네임 최초 1회 입력
     final key = await _ensureOwnerKey();
     final nick = _ownerNick.isEmpty ? '' : ':$_ownerNick';
@@ -698,10 +701,12 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
     int done = 0;
     for (final d in targets) {
       if (_myFloats.containsKey(_idOf(d))) continue;
-      await _sendCommandToDevice(d, 'LOCK:$key$nick');
+      if (alsoLock) {
+        await _sendCommandToDevice(d, 'LOCK:$key$nick');
+        await Future.delayed(const Duration(milliseconds: 250));
+      }
       _myFloats[_idOf(d)] = key;      // 저장은 아래에서 한 번에
       done++;
-      await Future.delayed(const Duration(milliseconds: 250));
     }
     await _saveMyFloats();
 
@@ -732,6 +737,48 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
       await Future.delayed(const Duration(milliseconds: 800));
       if (mounted) await _askTodayCount();
     }
+  }
+
+  // 연결된 찌에 실제로 잠금을 건다 (사용자가 명시적으로 켤 때만)
+  Future<void> _lockConnected() async {
+    final key = await _ensureOwnerKey();
+    final nick = _ownerNick.isEmpty ? '' : ':$_ownerNick';
+    for (final d in _connectedFloats.values.toList()) {
+      await _sendCommandToDevice(d, 'LOCK:$key$nick');
+      _myFloats[_idOf(d)] = key;
+      await Future.delayed(const Duration(milliseconds: 250));
+    }
+    await _saveMyFloats();
+    if (!mounted) return;
+    setState(() => _bleStatus = '🔒 도난방지 잠금 완료');
+  }
+
+  Future<bool?> _confirmLockAll(BuildContext ctx) {
+    return showDialog<bool>(
+      context: ctx,
+      builder: (d) => AlertDialog(
+        backgroundColor: const Color(0xFF1A1D23),
+        title: const Text('도난방지 잠금을 걸까요?',
+            style: TextStyle(color: Colors.white, fontSize: 17)),
+        content: const Text(
+            '잠그면 다른 사람 폰에서는 이 찌를 쓸 수 없습니다.\n\n'
+            '⚠ 폰을 바꾸거나 앱을 지우기 전에는\n'
+            '반드시 [전체 해제]를 먼저 해주세요.\n'
+            '해제하지 않으면 본인도 쓸 수 없게 됩니다.',
+            style: TextStyle(color: Colors.white70, fontSize: 13, height: 1.5)),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(d, false),
+              child: const Text('취소',
+                  style: TextStyle(color: Colors.white54))),
+          TextButton(
+              onPressed: () => Navigator.pop(d, true),
+              child: const Text('잠금',
+                  style: TextStyle(
+                      color: Colors.amberAccent, fontWeight: FontWeight.bold))),
+        ],
+      ),
+    );
   }
 
   Future<void> _unlockAll() async {
@@ -1903,8 +1950,8 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
                                 await _lockAll();
                                 setSheet(() {});
                               },
-                        icon: const Icon(Icons.lock, size: 18, color: Colors.white),
-                        label: const Text('전체 등록·잠금',
+                        icon: const Icon(Icons.check, size: 18, color: Colors.white),
+                        label: const Text('내 찌로 등록',
                             style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
                         style: ElevatedButton.styleFrom(
                           backgroundColor: Colors.blueAccent,
@@ -1938,6 +1985,33 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
                       ),
                     ),
                   ],
+                ),
+                const SizedBox(height: 10),
+                // 도난방지 잠금 — 원할 때만 켠다(폰을 바꾸면 해제할 수 없으므로 경고)
+                SizedBox(
+                  width: double.infinity,
+                  child: OutlinedButton.icon(
+                    onPressed: connected.isEmpty
+                        ? null
+                        : () async {
+                            final ok = await _confirmLockAll(ctx);
+                            if (ok == true) {
+                              await _lockConnected();
+                              setSheet(() {});
+                            }
+                          },
+                    icon: const Icon(Icons.lock, size: 18, color: Colors.amberAccent),
+                    label: const Text('도난방지 잠금 걸기',
+                        style: TextStyle(
+                            color: Colors.amberAccent,
+                            fontWeight: FontWeight.bold)),
+                    style: OutlinedButton.styleFrom(
+                      side: const BorderSide(color: Colors.amberAccent),
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(10)),
+                    ),
+                  ),
                 ),
                 const SizedBox(height: 14),
                 const Divider(color: Colors.white12, height: 1),
@@ -2832,7 +2906,7 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
                         connected > 0 ? Icons.check_circle : Icons.bluetooth_searching,
                         color: Colors.white),
                     label: Text(
-                        connected > 0 ? '찌 $connected개 등록하기' : '찌 찾기',
+                        connected > 0 ? '찌 $connected개 내 찌로 등록' : '찌 찾기',
                         style: const TextStyle(
                             color: Colors.white,
                             fontSize: 17,
