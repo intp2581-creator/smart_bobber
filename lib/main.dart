@@ -113,6 +113,7 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
   final Map<String, String> _myFloats = {};   // 이름 → key
   String _ownerKey = '';                       // 내 소유자 키(기기 공통)
   String _ownerNick = '';                      // 주인 닉네임 — 습득자가 볼 이름
+  bool _skipWelcome = false;                   // 등록 안내를 이번에 건너뛰었는지
 
   // 찌 고르기(찌함에서 꺼내는 중) 상태
   bool _picking = false;
@@ -363,7 +364,9 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
     try { _central.stopDiscovery(); } catch (_) {}
     if (mounted) {
       setState(() => _bleStatus = _connectedFloats.isEmpty
-          ? '준비됨 — 페어링에서 전자찌 검색'
+          ? (_myFloats.isEmpty
+              ? '준비됨 — 페어링에서 전자찌 검색'
+              : '등록된 찌를 찾는 중...')
           : '${_connectedFloats.length}개 연결됨');
       // 등록된 찌가 다 붙었으면 "오늘 몇 대 폈는지"부터 묻는다
       if (_myFloats.isNotEmpty && _connectedFloats.isNotEmpty) {
@@ -554,17 +557,18 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
         backgroundColor: const Color(0xFF1A1D23),
         title: const Text('닉네임 설정',
             style: TextStyle(color: Colors.white, fontSize: 16)),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text(
-                '찌를 잃어버렸을 때 주운 사람이 볼 이름입니다.\n한 번만 입력하면 모든 찌에 적용됩니다.',
-                style: TextStyle(color: Colors.white70, fontSize: 12)),
-            const SizedBox(height: 12),
-            TextField(
-              controller: ctrl,
-              maxLength: 12,
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                  '찌를 잃어버렸을 때 주운 사람이 볼 이름입니다.\n한 번만 입력하면 모든 찌에 적용됩니다.',
+                  style: TextStyle(color: Colors.white70, fontSize: 12)),
+              const SizedBox(height: 12),
+              TextField(
+                controller: ctrl,
+                maxLength: 12,
               style: const TextStyle(color: Colors.white),
               decoration: const InputDecoration(
                 hintText: '예: 손맛왕',
@@ -574,9 +578,10 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
                     borderSide: BorderSide(color: Colors.white24)),
                 focusedBorder: UnderlineInputBorder(
                     borderSide: BorderSide(color: Colors.blueAccent)),
+                ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
         actions: [
           TextButton(
@@ -647,6 +652,17 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
         backgroundColor: Colors.green,
         duration: const Duration(seconds: 2),
       ));
+      // 방금 등록했으면 바로 쓸 수 있게 켜 둔다 (다시 검색하라고 뜨지 않게)
+      await _sendCommandToAll('ON');
+      for (final d in _connectedFloats.values) {
+        d.isOn = true;
+      }
+      setState(() {
+        for (final e in _connectedFloats.entries) {
+          _floatPowerStates[e.key - 1] = true;
+        }
+        _startupAsked = true;   // 등록 직후엔 편성 질문 생략
+      });
     }
   }
 
@@ -2592,7 +2608,10 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
             if (_identifyMode) _buildIdentifyOverlay(),
             if (_sortMode) _buildSortOverlay(),
             // 아직 내 찌를 등록하지 않았으면 등록부터 안내
-            if (_myFloats.isEmpty && !_identifyMode && !_sortMode)
+            if (_myFloats.isEmpty &&
+                !_skipWelcome &&
+                !_identifyMode &&
+                !_sortMode)
               _buildWelcomeOverlay(),
           ],
         ),
@@ -2662,7 +2681,7 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
                 ),
                 const SizedBox(height: 10),
                 TextButton(
-                  onPressed: () => setState(() => _myFloats['__skip__'] = ''),
+                  onPressed: () => setState(() => _skipWelcome = true),
                   child: const Text('나중에 하기',
                       style: TextStyle(color: Colors.white38)),
                 ),
