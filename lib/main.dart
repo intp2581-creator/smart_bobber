@@ -1806,6 +1806,22 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
                 '내 찌 등록 · 추가',
                 _myFloats.isEmpty ? '미등록' : '${_myFloats.length}개 등록됨',
                 _showMyFloatsSheet),
+            const Divider(color: Colors.white12, height: 20),
+            ListTile(
+              leading: const Icon(Icons.power_settings_new,
+                  color: Colors.redAccent, size: 26),
+              title: const Text('앱 종료',
+                  style: TextStyle(
+                      color: Colors.redAccent,
+                      fontSize: 16,
+                      fontWeight: FontWeight.w600)),
+              subtitle: const Text('찌는 계속 작동합니다',
+                  style: TextStyle(color: Colors.white38, fontSize: 12)),
+              onTap: () {
+                Navigator.pop(ctx);
+                _confirmExit();
+              },
+            ),
           ],
         ),
       ),
@@ -2288,7 +2304,13 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
+    // 뒤로가기로 그냥 나가면 백그라운드에 남아 알림이 계속 울린다 → 종료 여부를 묻는다
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop) _confirmExit();
+      },
+      child: Scaffold(
       body: SafeArea(
         child: Stack(
           children: [
@@ -2722,7 +2744,51 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
           ],
         ),
       ),
+      ),
     );
+  }
+
+  // 앱 종료 — 백그라운드에 남아 알림이 계속 울리는 것을 막는다
+  Future<void> _confirmExit() async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (d) => AlertDialog(
+        backgroundColor: const Color(0xFF1A1D23),
+        title: const Text('앱을 종료할까요?',
+            style: TextStyle(color: Colors.white, fontSize: 18)),
+        content: const Text(
+            '앱을 종료해도 찌는 그대로 작동합니다.\n'
+            '· 불 켜짐 유지\n'
+            '· 입질 시 색 변화도 계속됨\n\n'
+            '폰 알림음만 멈춥니다.',
+            style: TextStyle(color: Colors.white70, fontSize: 14, height: 1.5)),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(d, false),
+              child: const Text('계속 사용',
+                  style: TextStyle(color: Colors.white54, fontSize: 16))),
+          TextButton(
+              onPressed: () => Navigator.pop(d, true),
+              child: const Text('종료',
+                  style: TextStyle(
+                      color: Colors.redAccent,
+                      fontSize: 16,
+                      fontWeight: FontWeight.bold))),
+        ],
+      ),
+    );
+    if (ok != true) return;
+
+    // 알림·타이머 정리 후 연결을 끊고 종료
+    _pickTimer?.cancel();
+    _blinkTimer?.cancel();
+    _stopAutoScan();
+    for (final d in _connectedFloats.values) {
+      try {
+        await _central.disconnect(d.peripheral);
+      } catch (_) {}
+    }
+    await SystemNavigator.pop();
   }
 
   // 정렬 마법사 오버레이 — 깜빡이는 찌의 실제 자리 번호를 탭/음성으로 지정
