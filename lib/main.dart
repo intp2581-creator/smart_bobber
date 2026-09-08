@@ -1185,8 +1185,12 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
                       fontWeight: FontWeight.bold,
                       color: Colors.white)),
               const SizedBox(height: 6),
-              const Text('숫자를 누르면 찌함에서 그만큼 반짝입니다',
-                  style: TextStyle(fontSize: 13, color: Colors.white54)),
+              Text(
+                  _connectedFloats.isEmpty
+                      ? '숫자를 누르면 찌함에서 그만큼 반짝입니다'
+                      : '현재 ${_connectedFloats.length}대 사용 중 — 늘리면 추가, 줄이면 걷기',
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(fontSize: 13, color: Colors.white54)),
               const SizedBox(height: 18),
               GridView.builder(
                 shrinkWrap: true,
@@ -1203,7 +1207,8 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
                   final sel = _floatCount == n;
                   return InkWell(
                     onTap: () async {
-                      final before = _floatCount;
+                      // 기준은 화면 칸 수가 아니라 실제 물에 나가 있는(연결된) 찌 수
+                      final before = _connectedFloats.length;
                       Navigator.pop(ctx);
                       if (n > before) {
                         // 대를 더 펴는 경우 — 늘어난 번호만 반짝
@@ -1395,9 +1400,8 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
         _floatPowerStates[i] = false;
         _floatBiteStates[i] = false;
       }
-      _floatCount = _floatCount - slots.length;
-      if (_floatCount < 1) _floatCount = 1;
-      _bleStatus = '${slots.length}대 걷음 — 현재 $_floatCount대';
+      _floatCount = remaining.isEmpty ? 1 : remaining.length;
+      _bleStatus = '${slots.length}대 걷음 — 현재 ${remaining.length}대';
     });
     _saveSlotAssignments();
     _saveSettings();
@@ -2458,16 +2462,11 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
               alignment: Alignment.topCenter,
               clipBehavior: Clip.none,
               children: [
-                // 실제 찌 이미지
-                ColorFiltered(
-                  colorFilter: isOn
-                      ? const ColorFilter.mode(Colors.transparent, BlendMode.dst)
-                      : ColorFilter.mode(Colors.grey.shade700.withValues(alpha: 0.6), BlendMode.srcATop),
-                  child: Image.asset(
-                    'assets/images/float_kreft.png',
-                    height: imgHeight,
-                    fit: BoxFit.fitHeight,
-                  ),
+                // 실제 찌 이미지 — 전원과 무관하게 항상 선명하게 (LED만 꺼진다)
+                Image.asset(
+                  'assets/images/float_kreft.png',
+                  height: imgHeight,
+                  fit: BoxFit.fitHeight,
                 ),
                 // LED 발광 — 찌탑 흰색 케미 위치에 글로우
                 // top = -(실제크기/2) → 밝기·입질 상태와 무관하게 글로우 중심이 찌탑에 고정
