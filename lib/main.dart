@@ -172,7 +172,7 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
     final prefs = await SharedPreferences.getInstance();
     setState(() {
       _notifyMode    = prefs.getString('notifyMode')   ?? 'sound';
-      _floatCount    = prefs.getInt('floatCount')      ?? 10;
+      _floatCount    = prefs.getInt('floatCount')      ?? 1;
       _selectedSound = prefs.getString('selectedSound') ?? 'sound_1';
       _brightnessValue  = prefs.getDouble('brightness')  ?? 1.0;
       _sensitivityValue = prefs.getDouble('sensitivity') ?? 0.5;
@@ -531,13 +531,16 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
 
   // ── 소유권 잠금 (도난·분실 방지) ────────────────────
   // 연결된 찌를 내 것으로 등록하고 잠금 → 다른 사람 앱에서 제어 불가
+  // 찌를 식별하는 키 — 광고 이름이 없으면 UUID로 대신한다
+  String _idOf(_FloatDevice d) =>
+      d.name.isNotEmpty ? d.name : d.peripheral.uuid.toString();
+
   Future<void> _lockFloat(_FloatDevice device) async {
-    if (device.name.isEmpty) return;
     final key = await _ensureOwnerKey();
     // LOCK:키:닉네임 — 닉네임은 습득자가 주인을 알아볼 수 있게 찌 광고에 노출됨
     final nick = _ownerNick.isEmpty ? '' : ':$_ownerNick';
     await _sendCommandToDevice(device, 'LOCK:$key$nick');
-    setState(() => _myFloats[device.name] = key);
+    setState(() => _myFloats[_idOf(device)] = key);
     await _saveMyFloats();
   }
 
@@ -595,11 +598,10 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
 
   // 잠금 해제 (중고 양도 시) → 새 주인이 다시 등록 가능
   Future<void> _unlockFloat(_FloatDevice device) async {
-    if (device.name.isEmpty) return;
-    final key = _myFloats[device.name];
+    final key = _myFloats[_idOf(device)];
     if (key == null) return;
     await _sendCommandToDevice(device, 'UNLOCK:$key');
-    setState(() => _myFloats.remove(device.name));
+    setState(() => _myFloats.remove(_idOf(device)));
     await _saveMyFloats();
   }
 
@@ -618,18 +620,32 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
   // 연결된 찌 전체 잠금 / 해제
   Future<void> _lockAll() async {
     if (!await _ensureOwnerNick()) return;   // 닉네임 최초 1회 입력
+    int done = 0;
     for (final d in _connectedFloats.values) {
-      if (d.name.isNotEmpty && !_myFloats.containsKey(d.name)) {
+      if (!_myFloats.containsKey(_idOf(d))) {
         await _lockFloat(d);
+        done++;
         await Future.delayed(const Duration(milliseconds: 200));
       }
     }
-    setState(() => _bleStatus = '내 찌 ${_myFloats.length}개 등록·잠금됨');
+    // 등록된 찌 개수에 맞춰 화면도 정리 (등록 안내 화면이 닫힌다)
+    setState(() {
+      _floatCount = _connectedFloats.isEmpty ? 1 : _connectedFloats.length;
+      _bleStatus = '내 찌 ${_myFloats.length}개 등록·잠금됨';
+    });
+    await _saveSettings();
+    if (done > 0 && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('찌 ${_myFloats.length}개 등록 완료!'),
+        backgroundColor: Colors.green,
+        duration: const Duration(seconds: 2),
+      ));
+    }
   }
 
   Future<void> _unlockAll() async {
     for (final d in _connectedFloats.values) {
-      if (_myFloats.containsKey(d.name)) {
+      if (_myFloats.containsKey(_idOf(d))) {
         await _unlockFloat(d);
         await Future.delayed(const Duration(milliseconds: 200));
       }
@@ -1207,7 +1223,12 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
               GridView.builder(
                 shrinkWrap: true,
                 physics: const NeverScrollableScrollPhysics(),
-                itemCount: 20,
+                // 등록해 둔 찌 개수까지만 (없으면 20까지)
+                itemCount: _myFloats.isNotEmpty
+                    ? _myFloats.length
+                    : (_connectedFloats.isNotEmpty
+                        ? _connectedFloats.length
+                        : 20),
                 gridDelegate:
                     const SliverGridDelegateWithFixedCrossAxisCount(
                         crossAxisCount: 5,
@@ -1659,8 +1680,8 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
             _settingsTile(
                 ctx,
                 _myFloats.isEmpty ? Icons.lock_open : Icons.lock,
-                '내 찌 (도난방지)',
-                _myFloats.isEmpty ? '미등록' : '${_myFloats.length}개 잠금',
+                '내 찌 등록 · 추가',
+                _myFloats.isEmpty ? '미등록' : '${_myFloats.length}개 등록됨',
                 _showMyFloatsSheet),
           ],
         ),
@@ -1724,7 +1745,30 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
                         : '$_ownerNick 님 · 등록된 내 찌: ${_myFloats.length}개',
                     style: const TextStyle(
                         fontSize: 12, color: Colors.amberAccent, fontWeight: FontWeight.bold)),
-                const SizedBox(height: 14),
+                const SizedBox(height: 12),
+                // 나중에 찌를 더 산 경우 — 새 찌를 찾아 등록
+                SizedBox(
+                  width: double.infinity,
+                  child: OutlinedButton.icon(
+                    onPressed: () {
+                      Navigator.pop(ctx);
+                      _showPairingScanner();
+                    },
+                    icon: const Icon(Icons.add_circle_outline,
+                        size: 20, color: Colors.amberAccent),
+                    label: const Text('새로 산 찌 찾기',
+                        style: TextStyle(
+                            color: Colors.amberAccent,
+                            fontWeight: FontWeight.bold)),
+                    style: OutlinedButton.styleFrom(
+                      side: const BorderSide(color: Colors.amberAccent),
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(10)),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 10),
                 // 전체 잠금 / 해제
                 Row(
                   children: [
@@ -1787,7 +1831,7 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
                             final slot = connected[i].key;
                             final dev = connected[i].value;
                             final name = dev.name.isEmpty ? '(이름없음)' : dev.name;
-                            final mine = _myFloats.containsKey(dev.name);
+                            final mine = _myFloats.containsKey(_idOf(dev));
                             return ListTile(
                               contentPadding: EdgeInsets.zero,
                               leading: Icon(
@@ -1804,9 +1848,7 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
                                   style: TextStyle(
                                       color: mine ? Colors.greenAccent.withValues(alpha: 0.6) : Colors.white30,
                                       fontSize: 11)),
-                              trailing: dev.name.isEmpty
-                                  ? null
-                                  : TextButton(
+                              trailing: TextButton(
                                       onPressed: () async {
                                         if (mine) {
                                           await _unlockFloat(dev);
@@ -2221,10 +2263,13 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
                 Expanded(
                   child: LayoutBuilder(
                     builder: (context, constraints) {
-                      final slotWidth = constraints.maxWidth / _floatCount;
+                      // 찌가 적을 때 너무 벌어지지 않게 한 칸 폭에 상한을 둔다
+                      final rawWidth = constraints.maxWidth / _floatCount;
+                      final slotWidth = rawWidth.clamp(0.0, 90.0);
                       final imgHeight = (slotWidth * 6.5)
                           .clamp(40.0, constraints.maxHeight - 56);
                       return Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
                         children: List.generate(
                           _floatCount,
                           (i) {
