@@ -77,6 +77,7 @@ class _FloatDevice {
   bool isOn = true;
   bool isBite = false;
   String name = '';        // 기기 고유 이름 (KREFT-XXXX)
+  int battery = -1;        // 배터리 잔량 % (-1 = 아직 모름)
 
   _FloatDevice(this.peripheral);
 }
@@ -308,6 +309,22 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
         // 단일 찌 레거시 신호: 연결된 슬롯으로 처리
         final slot = _slotOf(args.peripheral);
         if (slot != null) _triggerBiteAlert(slot);
+      } else if (msg.startsWith('BATT:')) {
+        // 찌가 보고한 배터리 잔량 — 낮으면 미리 교체 준비할 수 있게 표시
+        final pct = int.tryParse(msg.substring(5));
+        final slot = _slotOf(args.peripheral);
+        if (pct != null && slot != null) {
+          final dev = _connectedFloats[slot];
+          if (dev != null) {
+            final was = dev.battery;
+            setState(() => dev.battery = pct);
+            // 20% 아래로 처음 떨어지면 한 번 알려준다
+            if (pct <= 20 && (was < 0 || was > 20)) {
+              setState(() =>
+                  _bleStatus = '🔋 $slot번 찌 배터리 $pct% — 교체 준비하세요');
+            }
+          }
+        }
       } else if (msg == 'LOCK:FAIL' || msg == 'AUTH:FAIL') {
         // 이 찌는 다른 키로 잠겨 있어 제어할 수 없다 → 사용자에게 알린다
         final slot = _slotOf(args.peripheral);
@@ -491,6 +508,7 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
       'SENSITIVITY:${(_sensitivityValue * 5 + 1).toStringAsFixed(1)}',
       'VARI:${_variColor ? 1 : 0}',
       'ALERT:${_alertPhone ? 1 : 0}',
+      'BATT?',                    // 연결되면 배터리 잔량도 한 번 물어본다
     ];
 
     for (final cmd in cmds) {
@@ -3074,6 +3092,34 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
                 ),
               ]),
             ),
+            // 배터리 잔량 (찌가 보고할 때만 표시 — 낮으면 빨강)
+            if (connected && (_connectedFloats[number]?.battery ?? -1) >= 0)
+              Padding(
+                padding: const EdgeInsets.only(top: 3),
+                child: Builder(builder: (_) {
+                  final pct = _connectedFloats[number]!.battery;
+                  final c = pct <= 20
+                      ? Colors.redAccent
+                      : (pct <= 50 ? Colors.amberAccent : Colors.greenAccent);
+                  return Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                          pct <= 20
+                              ? Icons.battery_alert
+                              : Icons.battery_full,
+                          size: 10,
+                          color: c),
+                      const SizedBox(width: 2),
+                      Text('$pct%',
+                          style: TextStyle(
+                              color: c,
+                              fontSize: 9,
+                              fontWeight: FontWeight.bold)),
+                    ],
+                  );
+                }),
+              ),
             const SizedBox(height: 6),
           ],
         ),
