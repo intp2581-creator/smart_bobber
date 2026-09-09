@@ -19,6 +19,30 @@ final _commandCharUUID = UUID.fromString('0000FFE2-0000-1000-8000-00805F9B34FB')
 
 // 색상 프리셋 — 기본색 + 입질 시 변색 규칙 (전자찌 앱과 동일하게 유지)
 // 빨강→파랑, 초록→빨강, 파랑→빨강, 노랑→초록, 핑크→파랑
+// ── 프리미엄 블랙&골드 테마 (찌 실물 색감에 맞춤) ──────────
+const Color kGold      = Color(0xFFE8C56A);   // 기본 금색
+const Color kGoldLight = Color(0xFFF7E3A8);   // 하이라이트
+const Color kGoldDeep  = Color(0xFFB8912F);   // 그림자 쪽
+const Color kInk       = Color(0xFF11141A);   // 깊은 검정
+
+// 금속 광택 느낌의 그라데이션 (버튼 배경용)
+const LinearGradient kGoldGradient = LinearGradient(
+  begin: Alignment.topLeft,
+  end: Alignment.bottomRight,
+  colors: [kGoldLight, kGold, kGoldDeep],
+  stops: [0.0, 0.45, 1.0],
+);
+
+// 유리 느낌의 어두운 배경 (골드 테두리와 함께 씀)
+final LinearGradient kInkGradient = LinearGradient(
+  begin: Alignment.topLeft,
+  end: Alignment.bottomRight,
+  colors: [
+    Colors.white.withValues(alpha: 0.10),
+    Colors.black.withValues(alpha: 0.55),
+  ],
+);
+
 class ColorPreset {
   final String name;
   final int r, g, b;      // 기본색
@@ -2518,18 +2542,23 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
                               child: ElevatedButton(
                                 onPressed: _endFishing,
                                 style: ElevatedButton.styleFrom(
-                                    backgroundColor:
-                                        Colors.amber.withValues(alpha: 0.85),
+                                    backgroundColor: kGold,
+                                    foregroundColor: kInk,
                                     padding: const EdgeInsets.symmetric(
-                                        horizontal: 10),
+                                        horizontal: 12),
+                                    elevation: 4,
+                                    shadowColor: kGold.withValues(alpha: 0.6),
                                     shape: RoundedRectangleBorder(
                                         borderRadius:
-                                            BorderRadius.circular(14))),
+                                            BorderRadius.circular(14),
+                                        side: const BorderSide(
+                                            color: kGoldLight, width: 1))),
                                 child: const Text('낚시종료',
                                     style: TextStyle(
-                                        color: Colors.black87,
+                                        color: kInk,
                                         fontSize: 11,
-                                        fontWeight: FontWeight.bold)),
+                                        fontWeight: FontWeight.bold,
+                                        letterSpacing: 0.5)),
                               ),
                             ),
                             const SizedBox(width: 6),
@@ -2545,10 +2574,19 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
                                 _sendCommandToAll('ON');
                               },
                               style: ElevatedButton.styleFrom(
-                                  backgroundColor: Colors.blueAccent.withValues(alpha: 0.8),
-                                  padding: const EdgeInsets.symmetric(horizontal: 10),
-                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14))),
-                              child: const Text('ALL ON', style: TextStyle(color: Colors.white, fontSize: 11)),
+                                  backgroundColor: kInk.withValues(alpha: 0.75),
+                                  padding: const EdgeInsets.symmetric(horizontal: 12),
+                                  elevation: 3,
+                                  shape: RoundedRectangleBorder(
+                                      borderRadius: BorderRadius.circular(14),
+                                      side: BorderSide(
+                                          color: kGold.withValues(alpha: 0.85), width: 1.2))),
+                              child: const Text('ALL ON',
+                                  style: TextStyle(
+                                      color: kGold,
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.bold,
+                                      letterSpacing: 0.8)),
                             ),
                           ),
                           const SizedBox(width: 6),
@@ -2566,18 +2604,27 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
                                     '불 끔 — 입질 알림은 계속 옵니다');
                               },
                               style: ElevatedButton.styleFrom(
-                                  backgroundColor: Colors.redAccent.withValues(alpha: 0.8),
-                                  padding: const EdgeInsets.symmetric(horizontal: 10),
-                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14))),
-                              child: const Text('ALL OFF', style: TextStyle(color: Colors.white, fontSize: 11)),
+                                  backgroundColor: kInk.withValues(alpha: 0.75),
+                                  padding: const EdgeInsets.symmetric(horizontal: 12),
+                                  elevation: 3,
+                                  shape: RoundedRectangleBorder(
+                                      borderRadius: BorderRadius.circular(14),
+                                      side: BorderSide(
+                                          color: kGold.withValues(alpha: 0.45), width: 1.2))),
+                              child: Text('ALL OFF',
+                                  style: TextStyle(
+                                      color: kGold.withValues(alpha: 0.7),
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.bold,
+                                      letterSpacing: 0.8)),
                             ),
                           ),
                           const SizedBox(width: 4),
                           // 자주 안 쓰는 항목(모드·내 찌)은 여기로 모음
                           IconButton(
                             onPressed: _showSettingsSheet,
-                            icon: const Icon(Icons.settings,
-                                color: Colors.white70, size: 22),
+                            icon: Icon(Icons.settings,
+                                color: kGold.withValues(alpha: 0.85), size: 22),
                             padding: EdgeInsets.zero,
                             constraints:
                                 const BoxConstraints(minWidth: 30, minHeight: 28),
@@ -2707,7 +2754,7 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
                         padding: const EdgeInsets.symmetric(horizontal: 16),
                         child: Row(
                           children: [
-                            const Text('밝기', style: TextStyle(color: Colors.amber, fontSize: 12, fontWeight: FontWeight.bold)),
+                            const Text('밝기', style: TextStyle(color: kGold, fontSize: 12, fontWeight: FontWeight.bold)),
                             Expanded(
                               child: Slider(
                                 value: _brightnessValue,
@@ -2718,8 +2765,8 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
                                   _sendCommandToAll('BRIGHTNESS:${v.toStringAsFixed(2)}');
                                   _saveSettings();
                                 },
-                                activeColor: Colors.amber,
-                                inactiveColor: Colors.amber.withValues(alpha: 0.3),
+                                activeColor: kGold,
+                                inactiveColor: kGold.withValues(alpha: 0.25),
                               ),
                             ),
                             const Text('감도', style: TextStyle(color: Colors.cyanAccent, fontSize: 12, fontWeight: FontWeight.bold)),
@@ -2918,21 +2965,42 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
                 !_identifyMode &&
                 !_sortMode)
               Center(
-                child: ElevatedButton.icon(
-                  onPressed: _startFishing,
-                  icon: const Icon(Icons.phishing, size: 34, color: Colors.white),
-                  label: const Text('낚시 시작',
-                      style: TextStyle(
-                          color: Colors.white,
-                          fontSize: 26,
-                          fontWeight: FontWeight.bold)),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.blueAccent,
+                child: GestureDetector(
+                  onTap: _startFishing,
+                  child: Container(
                     padding: const EdgeInsets.symmetric(
-                        horizontal: 38, vertical: 22),
-                    shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(18)),
-                    elevation: 8,
+                        horizontal: 44, vertical: 20),
+                    decoration: BoxDecoration(
+                      gradient: kGoldGradient,
+                      borderRadius: BorderRadius.circular(20),
+                      border: Border.all(
+                          color: kGoldLight.withValues(alpha: 0.9), width: 1.5),
+                      boxShadow: [
+                        BoxShadow(
+                          color: kGold.withValues(alpha: 0.45),
+                          blurRadius: 26,
+                          spreadRadius: 1,
+                        ),
+                        const BoxShadow(
+                          color: Colors.black54,
+                          blurRadius: 10,
+                          offset: Offset(0, 5),
+                        ),
+                      ],
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Icon(Icons.phishing, size: 32, color: kInk),
+                        const SizedBox(width: 12),
+                        const Text('낚시 시작',
+                            style: TextStyle(
+                                color: kInk,
+                                fontSize: 26,
+                                fontWeight: FontWeight.bold,
+                                letterSpacing: 2)),
+                      ],
+                    ),
                   ),
                 ),
               ),
@@ -3411,7 +3479,7 @@ class _BottomMenu extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final c = color ?? Colors.white70;
+    final c = color ?? kGold;          // 기본은 금색 (프리미엄 톤)
     return InkWell(
       onTap: onTap,
       borderRadius: BorderRadius.circular(10),
@@ -3421,7 +3489,9 @@ class _BottomMenu extends StatelessWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(icon, color: c, size: 28),
+            Icon(icon, color: c, size: 28, shadows: [
+              Shadow(color: c.withValues(alpha: 0.5), blurRadius: 8),
+            ]),
             const SizedBox(height: 5),
             Text(label,
                 style: TextStyle(
