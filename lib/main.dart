@@ -436,9 +436,26 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
   Future<void> _onFloatConnected(Peripheral peripheral) async {
     try {
       final uuidStr = peripheral.uuid.toString();
+      final advName = _discoveredNames[uuidStr] ?? '';
+
+      // ⚠ 안드로이드는 BLE 주소가 바뀌므로, 같은 이름의 찌가 이미 연결돼 있으면
+      //   새 찌로 잡지 말고 그 자리를 대체한다 (2개가 3개로 늘던 문제)
+      int? slot;
+      if (advName.isNotEmpty) {
+        for (final e in _connectedFloats.entries) {
+          if (e.value.name == advName) {
+            slot = e.key;
+            try {
+              await _central.disconnect(e.value.peripheral);   // 옛 연결 정리
+            } catch (_) {}
+            break;
+          }
+        }
+        slot ??= _slotAssignments[advName];
+      }
 
       // 기존에 배정된 슬롯이 있으면 재사용, 없으면 빈 슬롯 찾기
-      int? slot = _slotAssignments[uuidStr];
+      slot ??= _slotAssignments[uuidStr];
       if (slot == null || _connectedFloats.containsKey(slot)) {
         slot = 1;
         while (_connectedFloats.containsKey(slot!) ||
@@ -446,12 +463,13 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
           slot++;
           if (slot > 20) return;
         }
-        _slotAssignments[uuidStr] = slot;
-        _saveSlotAssignments();
       }
+      // 슬롯 기억은 이름 기준으로 (주소는 바뀌므로)
+      _slotAssignments[advName.isNotEmpty ? advName : uuidStr] = slot;
+      _saveSlotAssignments();
 
       final device = _FloatDevice(peripheral);
-      device.name = _discoveredNames[uuidStr] ?? '';
+      device.name = advName;
       _connectedFloats[slot] = device;
       setState(() => _bleStatus = '${_connectedFloats.length}개 연결됨');
 
@@ -647,17 +665,14 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
         backgroundColor: const Color(0xFF1A1D23),
         insetPadding:
             const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-        title: const Text('닉네임 설정',
-            style: TextStyle(color: Colors.white, fontSize: 16)),
+        title: const Text('닉네임 설정 (찌를 주운 사람이 볼 이름)',
+            style: TextStyle(color: Colors.white, fontSize: 15)),
+        // 키보드가 올라와도 입력창이 보이도록 최소 구성으로 둔다
         content: SingleChildScrollView(
           child: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Text(
-                  '찌를 잃어버렸을 때 주운 사람이 볼 이름입니다.',
-                  style: TextStyle(color: Colors.white70, fontSize: 12)),
-              const SizedBox(height: 8),
               TextField(
                 controller: ctrl,
                 autofocus: true,
@@ -1388,9 +1403,18 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
               Text(
                   _connectedFloats.isEmpty
                       ? '숫자를 누르면 찌함에서 그만큼 반짝입니다'
-                      : '현재 ${_connectedFloats.length}대 — 늘리면 추가, 줄이면 걷기',
+                      : '지금 ${_connectedFloats.length}대 사용 중',
                   textAlign: TextAlign.center,
-                  style: const TextStyle(fontSize: 13, color: Colors.white54)),
+                  style: const TextStyle(fontSize: 14, color: Colors.white70)),
+              if (_connectedFloats.isNotEmpty) ...[
+                const SizedBox(height: 6),
+                Text(
+                    '더 펴려면 ${_connectedFloats.length}보다 큰 숫자,\n'
+                    '걷으려면 작은 숫자를 누르세요',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                        fontSize: 13, color: kGold.withValues(alpha: 0.85))),
+              ],
               const SizedBox(height: 18),
               GridView.builder(
                 shrinkWrap: true,
@@ -3147,7 +3171,7 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
       child: Container(
         color: Colors.black.withValues(alpha: 0.9),
         child: SafeArea(
-          child: Padding(
+          child: SingleChildScrollView(   // 낮은 화면에서도 버튼까지 보이게
             padding: const EdgeInsets.all(20),
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
@@ -3161,20 +3185,19 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
                 Text('찾은 찌 ${_identified.length} / $_identifyTarget',
                     style: const TextStyle(
                         color: Colors.greenAccent, fontSize: 15)),
-                const SizedBox(height: 24),
+                const SizedBox(height: 14),
                 const Text('지금 깜빡이는 찌가',
-                    style: TextStyle(color: Colors.white, fontSize: 17)),
-                const SizedBox(height: 4),
+                    style: TextStyle(color: Colors.white, fontSize: 16)),
                 const Text('물에 있나요?',
                     style: TextStyle(
                         color: Colors.white,
-                        fontSize: 22,
+                        fontSize: 21,
                         fontWeight: FontWeight.bold)),
-                const SizedBox(height: 8),
+                const SizedBox(height: 6),
                 const Text('찌함 안에서 깜빡이면 [찌함에 있음]을 누르세요',
                     textAlign: TextAlign.center,
-                    style: TextStyle(color: Colors.white38, fontSize: 13)),
-                const SizedBox(height: 30),
+                    style: TextStyle(color: Colors.white38, fontSize: 12)),
+                const SizedBox(height: 18),
                 Row(
                   children: [
                     Expanded(
