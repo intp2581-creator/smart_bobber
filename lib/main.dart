@@ -115,6 +115,7 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
   String _ownerKey = '';                       // 내 소유자 키(기기 공통)
   String _ownerNick = '';                      // 주인 닉네임 — 습득자가 볼 이름
   bool _skipWelcome = false;                   // 등록 안내를 이번에 건너뛰었는지
+  bool _fishing = false;                       // 낚시 중인지 (낚시시작~낚시종료)
 
   // 찌 고르기(찌함에서 꺼내는 중) 상태
   bool _picking = false;
@@ -201,6 +202,7 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
       // 내 찌 등록 목록 & 소유자 키·닉네임 복원
       _ownerKey = prefs.getString('ownerKey') ?? '';
       _ownerNick = prefs.getString('ownerNick') ?? '';
+      _fishing = prefs.getBool('fishing') ?? false;   // 낚시 중이었는지 복원
 
       // 찌 이름 기억 복원 (앱 재시작 후에도 어느 찌인지 알 수 있게)
       final nameJson = prefs.getString('deviceNames');
@@ -393,8 +395,8 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
               ? '준비됨 — 페어링에서 전자찌 검색'
               : '등록된 찌를 찾는 중...')
           : '${_connectedFloats.length}개 연결됨');
-      // 등록된 찌가 다 붙었으면 "오늘 몇 대 폈는지"부터 묻는다
-      if (_myFloats.isNotEmpty && _connectedFloats.isNotEmpty) {
+      // 낚시 중일 때만 편성을 묻는다. 시작 전이면 [낚시시작] 버튼을 누르게 한다.
+      if (_fishing && _myFloats.isNotEmpty && _connectedFloats.isNotEmpty) {
         Future.delayed(const Duration(milliseconds: 600), _askTodayCount);
       }
     }
@@ -740,10 +742,8 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
           _floatPowerStates[i] = false;
         }
       });
-      // 집에서 미리 세팅할 수도, 물가에서 할 수도 있으니 물어보되 "나중에"를 둔다
-      _startupAsked = false;
-      await Future.delayed(const Duration(milliseconds: 800));
-      if (mounted) await _askTodayCount();
+      // 등록만 끝내고, 편성은 [낚시시작]을 눌렀을 때 진행한다
+      setState(() => _bleStatus = '등록 완료 — [낚시시작]을 누르세요');
     }
   }
 
@@ -1355,8 +1355,8 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Text('오늘 몇 대 쓰세요?',
-                  style: TextStyle(
+              Text(_fishing ? '낚싯대를 추가하거나 걷을까요?' : '오늘 몇 대 쓰세요?',
+                  style: const TextStyle(
                       fontSize: 20,
                       fontWeight: FontWeight.bold,
                       color: Colors.white)),
@@ -1364,7 +1364,7 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
               Text(
                   _connectedFloats.isEmpty
                       ? '숫자를 누르면 찌함에서 그만큼 반짝입니다'
-                      : '현재 ${_connectedFloats.length}대 사용 중 — 늘리면 추가, 줄이면 걷기',
+                      : '현재 ${_connectedFloats.length}대 — 늘리면 추가, 줄이면 걷기',
                   textAlign: TextAlign.center,
                   style: const TextStyle(fontSize: 13, color: Colors.white54)),
               const SizedBox(height: 18),
@@ -1457,6 +1457,67 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
     await pulse();
     // BLINK는 약 3초 후 멈추므로 주기적으로 다시 보내 계속 반짝이게 한다
     _pickTimer = Timer.periodic(const Duration(seconds: 3), (_) => pulse());
+  }
+
+  // ── 낚시 시작 / 종료 ───────────────────────────────────────
+  // 낚시 중이면 앱을 껐다 켜도 "몇 대 쓰세요?"를 다시 묻지 않고,
+  // 찌선택은 "추가/걷기"로 동작한다.
+  Future<void> _startFishing() async {
+    if (_connectedFloats.isEmpty) {
+      setState(() => _bleStatus = '⚠ 연결된 찌가 없어요 (페어링을 확인하세요)');
+      return;
+    }
+    setState(() => _fishing = true);
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('fishing', true);
+    _startupAsked = false;
+    await _askTodayCount();          // 오늘 몇 대 쓰는지부터
+  }
+
+  Future<void> _endFishing() async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (d) => AlertDialog(
+        backgroundColor: const Color(0xFF1A1D23),
+        title: const Text('낚시를 종료할까요?',
+            style: TextStyle(color: Colors.white, fontSize: 18)),
+        content: const Text('찌 불을 모두 끄고 편성을 정리합니다.\n등록된 내 찌는 그대로 유지됩니다.',
+            style: TextStyle(color: Colors.white70, fontSize: 14, height: 1.5)),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(d, false),
+              child: const Text('취소',
+                  style: TextStyle(color: Colors.white54, fontSize: 16))),
+          TextButton(
+              onPressed: () => Navigator.pop(d, true),
+              child: const Text('낚시 종료',
+                  style: TextStyle(
+                      color: Colors.amberAccent,
+                      fontSize: 16,
+                      fontWeight: FontWeight.bold))),
+        ],
+      ),
+    );
+    if (ok != true) return;
+
+    await _sendCommandToAll('OFF');
+    for (final d in _connectedFloats.values) {
+      d.isOn = false;
+    }
+    // 걷어둔 찌를 모두 되돌려 다음 낚시에 다시 쓸 수 있게 한다
+    _benchedFloats.clear();
+    setState(() {
+      _fishing = false;
+      _picking = false;
+      for (int i = 0; i < _floatPowerStates.length; i++) {
+        _floatPowerStates[i] = false;
+        _floatBiteStates[i] = false;
+      }
+      _bleStatus = '낚시 종료 — 수고하셨습니다';
+    });
+    _pickTimer?.cancel();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('fishing', false);
   }
 
   // ── 낚시 시작 흐름 ─────────────────────────────────────────
@@ -2450,6 +2511,29 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
                       ),
                       Row(
                         children: [
+                          // 낚시 중일 때만 — 끝내면 편성 정리하고 시작 화면으로
+                          if (_fishing) ...[
+                            SizedBox(
+                              height: 28,
+                              child: ElevatedButton(
+                                onPressed: _endFishing,
+                                style: ElevatedButton.styleFrom(
+                                    backgroundColor:
+                                        Colors.amber.withValues(alpha: 0.85),
+                                    padding: const EdgeInsets.symmetric(
+                                        horizontal: 10),
+                                    shape: RoundedRectangleBorder(
+                                        borderRadius:
+                                            BorderRadius.circular(14))),
+                                child: const Text('낚시종료',
+                                    style: TextStyle(
+                                        color: Colors.black87,
+                                        fontSize: 11,
+                                        fontWeight: FontWeight.bold)),
+                              ),
+                            ),
+                            const SizedBox(width: 6),
+                          ],
                           SizedBox(
                             height: 28,
                             child: ElevatedButton(
@@ -2477,6 +2561,9 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
                                   for (final d in _connectedFloats.values) { d.isOn = false; }
                                 });
                                 _sendCommandToAll('OFF');
+                                // 불만 끄고 입질 알림은 계속 온다 (낮낚시)
+                                setState(() => _bleStatus =
+                                    '불 끔 — 입질 알림은 계속 옵니다');
                               },
                               style: ElevatedButton.styleFrom(
                                   backgroundColor: Colors.redAccent.withValues(alpha: 0.8),
@@ -2825,6 +2912,30 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
               ),
 
             // 정렬 마법사 오버레이
+            // 등록은 됐지만 아직 낚시를 시작하지 않았을 때 — 가운데 큰 시작 버튼
+            if (!_fishing &&
+                _myFloats.isNotEmpty &&
+                !_identifyMode &&
+                !_sortMode)
+              Center(
+                child: ElevatedButton.icon(
+                  onPressed: _startFishing,
+                  icon: const Icon(Icons.phishing, size: 34, color: Colors.white),
+                  label: const Text('낚시 시작',
+                      style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 26,
+                          fontWeight: FontWeight.bold)),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.blueAccent,
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 38, vertical: 22),
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(18)),
+                    elevation: 8,
+                  ),
+                ),
+              ),
             if (_identifyMode) _buildIdentifyOverlay(),
             if (_sortMode) _buildSortOverlay(),
             // 아직 내 찌를 등록하지 않았으면 등록부터 안내
