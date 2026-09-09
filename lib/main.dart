@@ -2561,12 +2561,27 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
                         children: [
                           // 낚시 중일 때만 — 끝내면 편성 정리하고 시작 화면으로
                           if (_fishing) ...[
-                            GestureDetector(
-                              onTap: _endFishing,
-                              child: Image.asset(
-                                'assets/images/btn_end.png',
-                                height: 30,
-                                fit: BoxFit.contain,
+                            // ALL ON/OFF 와 같은 형태, 금색 채움으로만 강조
+                            SizedBox(
+                              height: 28,
+                              child: ElevatedButton(
+                                onPressed: _endFishing,
+                                style: ElevatedButton.styleFrom(
+                                    backgroundColor: kGold,
+                                    padding: const EdgeInsets.symmetric(
+                                        horizontal: 12),
+                                    elevation: 3,
+                                    shape: RoundedRectangleBorder(
+                                        borderRadius:
+                                            BorderRadius.circular(14),
+                                        side: const BorderSide(
+                                            color: kGoldLight, width: 1.2))),
+                                child: const Text('낚시종료',
+                                    style: TextStyle(
+                                        color: kInk,
+                                        fontSize: 11,
+                                        fontWeight: FontWeight.bold,
+                                        letterSpacing: 0.8)),
                               ),
                             ),
                             const SizedBox(width: 6),
