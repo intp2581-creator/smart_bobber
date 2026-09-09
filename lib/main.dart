@@ -2561,28 +2561,12 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
                         children: [
                           // 낚시 중일 때만 — 끝내면 편성 정리하고 시작 화면으로
                           if (_fishing) ...[
-                            SizedBox(
-                              height: 28,
-                              child: ElevatedButton(
-                                onPressed: _endFishing,
-                                style: ElevatedButton.styleFrom(
-                                    backgroundColor: kGold,
-                                    foregroundColor: kInk,
-                                    padding: const EdgeInsets.symmetric(
-                                        horizontal: 12),
-                                    elevation: 4,
-                                    shadowColor: kGold.withValues(alpha: 0.6),
-                                    shape: RoundedRectangleBorder(
-                                        borderRadius:
-                                            BorderRadius.circular(14),
-                                        side: const BorderSide(
-                                            color: kGoldLight, width: 1))),
-                                child: const Text('낚시종료',
-                                    style: TextStyle(
-                                        color: kInk,
-                                        fontSize: 11,
-                                        fontWeight: FontWeight.bold,
-                                        letterSpacing: 0.5)),
+                            GestureDetector(
+                              onTap: _endFishing,
+                              child: Image.asset(
+                                'assets/images/btn_end.png',
+                                height: 30,
+                                fit: BoxFit.contain,
                               ),
                             ),
                             const SizedBox(width: 6),
@@ -2992,38 +2976,20 @@ class _SmartControlHomeScreenState extends State<SmartControlHomeScreen> {
                 child: GestureDetector(
                   onTap: _startFishing,
                   child: Container(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 44, vertical: 20),
                     decoration: BoxDecoration(
-                      gradient: kGoldGradient,
                       borderRadius: BorderRadius.circular(20),
-                      border: Border.all(
-                          color: kGoldLight.withValues(alpha: 0.9), width: 1.5),
                       boxShadow: [
                         BoxShadow(
-                          color: kGold.withValues(alpha: 0.45),
-                          blurRadius: 26,
-                          spreadRadius: 1,
-                        ),
-                        const BoxShadow(
-                          color: Colors.black54,
-                          blurRadius: 10,
-                          offset: Offset(0, 5),
+                          color: kGold.withValues(alpha: 0.35),
+                          blurRadius: 28,
+                          spreadRadius: 2,
                         ),
                       ],
                     ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        const Icon(Icons.phishing, size: 32, color: kInk),
-                        const SizedBox(width: 12),
-                        const Text('낚시 시작',
-                            style: TextStyle(
-                                color: kInk,
-                                fontSize: 26,
-                                fontWeight: FontWeight.bold,
-                                letterSpacing: 2)),
-                      ],
+                    child: Image.asset(
+                      'assets/images/btn_start.png',
+                      width: 300,
+                      fit: BoxFit.contain,
                     ),
                   ),
                 ),
